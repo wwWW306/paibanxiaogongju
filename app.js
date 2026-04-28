@@ -214,6 +214,7 @@ const Shop = {
               <div style="flex:1"><label>结束时间</label><input type="time" id="cfgEnd"/></div>
               <div style="flex:1"><label>每班所需人数</label><input type="number" id="cfgNeed" value="1" min="1" placeholder="每个班几个人"/></div>
             </div>
+            <div class="form-group"><label>所需职位 <span style="font-size:11px;color:#999;font-weight:400">(留空则不限制)</span></label><input id="cfgPosition" placeholder="例如：前台、后厨、服务员"/></div>
             <button class="btn btn-primary btn-block" onclick="Boss.addShift()">➕ 加入班次列表</button>
           </div>
 
@@ -376,8 +377,12 @@ async function autoSchedule() {
       asgn[day] = {};
       c.shifts.forEach(sh => {
         const required = parseInt(sh.required) || 1;
-        // 1. 筛选 (Layer 1)
-        const cands = emps.filter(e => getAvailStatus(_DB.tt[e.id], day, sh.id) !== 'busy');
+        // 1. 筛选 (Layer 1): 可用 + 职位匹配
+        const cands = emps.filter(e => {
+          if (getAvailStatus(_DB.tt[e.id], day, sh.id) === 'busy') return false;
+          if (sh.position && e.position !== sh.position) return false;
+          return true;
+        });
 
         // 2. 排序 (Layer 2)
         cands.sort((a, b) => {
@@ -421,10 +426,11 @@ const Boss = {
     const s = document.getElementById('cfgStart').value;
     const e = document.getElementById('cfgEnd').value;
     const r = parseInt(document.getElementById('cfgNeed').value) || 1;
+    const p = document.getElementById('cfgPosition').value.trim();
 
     if(!n||!s||!e) return toast('请完整填写信息','error');
 
-    _DB.config.shifts.push({id: 's'+Date.now(), name:n, start:s, end:e, required: r});
+    _DB.config.shifts.push({id: 's'+Date.now(), name:n, start:s, end:e, required: r, position: p});
     await S.saveCfg(_DB.config);
     this.renderShiftList();
     this.renderGrid();
@@ -447,6 +453,7 @@ const Boss = {
         + '<div style="flex:1"><label>开始</label><input type="time" data-sid="'+s.id+'" data-field="start" value="'+s.start+'"/></div>'
         + '<div style="flex:1"><label>结束</label><input type="time" data-sid="'+s.id+'" data-field="end" value="'+s.end+'"/></div>'
         + '<div style="flex:1"><label>每班人数</label><input type="number" min="1" data-sid="'+s.id+'" data-field="required" value="'+(s.required||1)+'"/></div>'
+        + '<div style="flex:1"><label>所需职位</label><input data-sid="'+s.id+'" data-field="position" value="'+(s.position||'')+'" placeholder="不限"/></div>'
         + '<div style="flex:0;align-self:flex-end"><button class="btn btn-danger btn-sm" onclick="Boss.removeShift(\''+s.id+'\')">删除</button></div>'
         + '</div></div>';
     }).join('');
@@ -474,30 +481,43 @@ const Boss = {
   renderGrid() {
     const c=_DB.config, emps=_DB.emps, sched=_DB.sched, ov=sched.overrides || {}, el=document.getElementById('bossGrid');
     if(!c.shifts.length||!emps.length) return el.innerHTML = '<div class="empty">请先配置班次并邀请员工</div>';
-    
+
     const em={}; emps.forEach(e=>{em[e.id]=e});
 
-    let h='<table class="schedule-table"><thead><tr><th>班次</th>'+c.workDays.map(d=>`<th>${d}</th>`).join('')+'</tr></thead><tbody>';
+    // 按职位分组
+    const groups = {};
     c.shifts.forEach(sh => {
-      const required = parseInt(sh.required) || 1;
-      h += '<tr><td class="shift-label">' + sh.name + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
-      c.workDays.forEach(day => {
-        const ids = ov[day + '_' + sh.id] || (sched.assignments[day] ? sched.assignments[day][sh.id] : []) || [];
-        const shortage = ids.length < required;
-        let cellHtml = ids.map(id => {
-          const emp = em[id];
-          const stat = getAvailStatus(_DB.tt[id], day, sh.id);
-          const lateTag = stat === 'late' ? ' <small style="color:orange">(晚)</small>' : '';
-          return '<span class="emp-tag">' + (emp ? emp.name : '?') + lateTag + '</span>';
-        }).join('');
+      const pos = sh.position || '通用';
+      if (!groups[pos]) groups[pos] = [];
+      groups[pos].push(sh);
+    });
 
-        if (shortage) {
-          cellHtml += '<div class="shortage-tag">⚠️ 缺 ' + (required - ids.length) + ' 人</div>';
-        }
+    let h='<table class="schedule-table"><thead><tr><th>班次</th>'+c.workDays.map(d=>`<th>${d}</th>`).join('')+'</tr></thead><tbody>';
 
-        h += '<td class="' + (shortage ? 'cell-shortage' : '') + '">' + cellHtml + '</td>';
+    Object.keys(groups).forEach(pos => {
+      h += '<tr class="pos-header"><td colspan="' + (c.workDays.length + 1) + '" style="background:#f5f5f5;font-weight:700;padding:6px 10px;font-size:13px;text-align:left;color:#555">' + pos + '</td></tr>';
+
+      groups[pos].forEach(sh => {
+        const required = parseInt(sh.required) || 1;
+        h += '<tr><td class="shift-label">' + sh.name + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
+        c.workDays.forEach(day => {
+          const ids = ov[day + '_' + sh.id] || (sched.assignments[day] ? sched.assignments[day][sh.id] : []) || [];
+          const shortage = ids.length < required;
+          let cellHtml = ids.map(id => {
+            const emp = em[id];
+            const stat = getAvailStatus(_DB.tt[id], day, sh.id);
+            const lateTag = stat === 'late' ? ' <small style="color:orange">(晚)</small>' : '';
+            return '<span class="emp-tag">' + (emp ? emp.name : '?') + lateTag + '</span>';
+          }).join('');
+
+          if (shortage) {
+            cellHtml += '<div class="shortage-tag">⚠️ 缺 ' + (required - ids.length) + ' 人</div>';
+          }
+
+          h += '<td class="' + (shortage ? 'cell-shortage' : '') + '">' + cellHtml + '</td>';
+        });
+        h += '</tr>';
       });
-      h += '</tr>';
     });
     el.innerHTML = h+'</tbody></table>';
   },
@@ -508,6 +528,7 @@ const Boss = {
       if (!s) return;
       const f = input.dataset.field, v = input.value;
       if (f === 'required') s[f] = parseInt(v) || 1;
+      else if (f === 'position') s[f] = v.trim();
       else s[f] = v;
     });
     _DB.config.workDays = [...document.querySelectorAll('#workDayChecks input:checked')].map(i => i.value);
