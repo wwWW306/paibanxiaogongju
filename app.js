@@ -549,13 +549,34 @@ const Boss = {
 
 // === Employee Shift Selection ===
 const EmpShift = {
+  _myPosition() {
+    const asgn = _DB.sched.assignments || {};
+    for (const day of Object.keys(asgn)) {
+      for (const sid of Object.keys(asgn[day] || {})) {
+        if ((asgn[day][sid] || []).includes(_USER.id)) {
+          const sh = _DB.config.shifts.find(s => s.id === sid);
+          if (sh && sh.position) return sh.position;
+        }
+      }
+    }
+    return null;
+  },
+
   async claim(day, shiftId) {
-    // 确保 sched 存在
+    const sh = _DB.config.shifts.find(s => s.id === shiftId);
+    if (!sh) return;
+    const myPos = this._myPosition();
+
+    // 同一时间段职位不同？每个员工只能选一个职位
+    if (myPos && sh.position && sh.position !== myPos) {
+      return toast('你已选择「' + myPos + '」，不能混选其他职位。先取消已有班次再换', 'error');
+    }
+
     if (!_DB.sched.assignments) _DB.sched.assignments = {};
     if (!_DB.sched.assignments[day]) _DB.sched.assignments[day] = {};
 
-    const required = parseInt(_DB.config.shifts.find(s => s.id === shiftId)?.required) || 1;
-    let picked = _DB.sched.assignments[day][shiftId] || [];
+    const required = parseInt(sh.required) || 1;
+    const picked = _DB.sched.assignments[day][shiftId] || [];
 
     // 当天已选其他班次？先取消
     Object.keys(_DB.sched.assignments[day] || {}).forEach(sid => {
@@ -565,14 +586,12 @@ const EmpShift = {
     });
 
     if (picked.includes(_USER.id)) {
-      // 取消选择
       _DB.sched.assignments[day][shiftId] = picked.filter(id => id !== _USER.id);
       await S.saveSched(_DB.sched.assignments);
       this.render();
       EmpSchedule.render();
       toast('已取消', 'info');
     } else if (picked.length < required) {
-      // 选择
       _DB.sched.assignments[day][shiftId] = [...picked, _USER.id];
       await S.saveSched(_DB.sched.assignments);
       this.render();
@@ -588,8 +607,12 @@ const EmpShift = {
     if (!c.shifts.length) return el.innerHTML = '<div class="empty">老板尚未发布班次</div>';
 
     const em = {}; emps.forEach(e => { em[e.id] = e; });
+    const myPos = this._myPosition();
 
-    let html = '';
+    let html = myPos
+      ? '<div style="background:#f0f2ff;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:13px">你的职位：<strong style="color:#667eea">' + myPos + '</strong> <span style="color:#999;font-size:11px">（取消全部班次后可换职位）</span></div>'
+      : '<div style="background:#fff9c4;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:13px">请选择一个班次，选择后职位将锁定</div>';
+
     c.workDays.forEach(day => {
       html += '<div class="card" style="margin-bottom:10px"><h3>' + day + '</h3>';
       c.shifts.forEach(sh => {
@@ -597,13 +620,15 @@ const EmpShift = {
         const picked = (sched.assignments && sched.assignments[day] && sched.assignments[day][sh.id]) || [];
         const isMine = picked.includes(_USER.id);
         const full = picked.length >= required && !isMine;
+        const posMismatch = myPos && sh.position && sh.position !== myPos;
+        const disabled = full || posMismatch;
         const posTag = sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
         const names = picked.map(id => em[id] ? em[id].name : '?').join(', ') || '—';
 
-        html += '<div class="shift-select-row' + (isMine ? ' selected' : '') + (full ? ' full' : '') + '" onclick="EmpShift.claim(\'' + day + '\',\'' + sh.id + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid ' + (isMine ? '#667eea' : '#eee') + ';border-radius:8px;margin-bottom:6px;cursor:' + (full ? 'not-allowed' : 'pointer') + ';background:' + (isMine ? '#f0f2ff' : (full ? '#f5f5f5' : '#fff')) + ';opacity:' + (full ? '0.5' : '1') + '">'
+        html += '<div onclick="' + (disabled ? '' : 'EmpShift.claim(\'' + day + '\',\'' + sh.id + '\')') + '" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid ' + (isMine ? '#667eea' : '#eee') + ';border-radius:8px;margin-bottom:6px;cursor:' + (disabled ? 'not-allowed' : 'pointer') + ';background:' + (isMine ? '#f0f2ff' : (disabled ? '#f5f5f5' : '#fff')) + ';opacity:' + (disabled ? '0.5' : '1') + '">'
           + '<div><strong>' + sh.name + '</strong>' + posTag + ' <small style="color:#888">' + sh.start + '-' + sh.end + '</small></div>'
           + '<div style="font-size:12px;color:#888">' + names + ' <span style="color:#aaa">(' + picked.length + '/' + required + ')</span>'
-          + (isMine ? ' <span style="color:#667eea;font-weight:600">✓ 已选</span>' : (full ? ' <span style="color:#e74c3c">已满</span>' : ''))
+          + (isMine ? ' <span style="color:#667eea;font-weight:600">✓ 已选</span>' : (posMismatch ? ' <span style="color:#e67e22">其他职位</span>' : (full ? ' <span style="color:#e74c3c">已满</span>' : '')))
           + '</div></div>';
       });
       html += '</div>';
