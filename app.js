@@ -377,10 +377,10 @@ async function autoSchedule() {
       asgn[day] = {};
       c.shifts.forEach(sh => {
         const required = parseInt(sh.required) || 1;
-        // 1. 筛选 (Layer 1): 可用 + 职位匹配
+        // 1. 筛选 (Layer 1): 可用 + 职位匹配 (员工未设职位则不限制)
         const cands = emps.filter(e => {
           if (getAvailStatus(_DB.tt[e.id], day, sh.id) === 'busy') return false;
-          if (sh.position && e.position !== sh.position) return false;
+          if (sh.position && e.position && e.position !== sh.position) return false;
           return true;
         });
 
