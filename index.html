@@ -49,6 +49,13 @@
       </div>
       
       <div id="signupActions" style="display:none">
+        <div class="form-group">
+          <label>性别</label>
+          <select id="signupGender">
+            <option value="男">男</option>
+            <option value="女">女</option>
+          </select>
+        </div>
         <button class="btn btn-primary btn-block mt-20" onclick="Auth.handleAuth('signup')">创建账号</button>
         <p style="text-align:center; margin-top:15px; font-size:13px">
           已有账号？<a href="javascript:void(0)" onclick="UI.toggleAuthMode('login')" style="color:var(--primary-color)">返回登录</a>

@@ -61,7 +61,8 @@ const Router = {
       _ROLE = data.role;
     } else {
       const name = _USER.email ? _USER.email.split('@')[0] : '用户';
-      const { data: newP } = await sb.from('profiles').insert([{ id: _USER.id, email: _USER.email, name: name }]).select().single();
+      const gender = _USER.user_metadata?.gender || '男';
+      const { data: newP } = await sb.from('profiles').insert([{ id: _USER.id, email: _USER.email, name: name, gender: gender }]).select().single();
       _PROFILE = newP;
     }
   },
@@ -87,11 +88,11 @@ const Auth = {
     try {
       let res;
       if (mode === 'signup') {
-        res = await sb.auth.signUp({ email, password });
+        const genderEl = document.getElementById('signupGender');
+        const gender = genderEl ? genderEl.value : '男';
+        res = await sb.auth.signUp({ email, password, options: { data: { gender } } });
         if (res.error) throw res.error;
         toast('注册成功！正在自动登录...', 'success');
-        // Supabase signUp might not automatically sign in if email confirmation is on, 
-        // but since we disabled it, it should return a session.
       } else {
         res = await sb.auth.signInWithPassword({ email, password });
         if (res.error) throw res.error;
@@ -136,7 +137,7 @@ const Onboarding = {
     if (!shop) return toast('邀请码无效','error');
     
     await sb.from('profiles').update({ shop_id: shop.id, role: 'employee' }).eq('id', _USER.id);
-    await sb.from('pb_employees').upsert([{ id: _USER.id, name: _PROFILE.name || '员工', email: _USER.email, shop_id: shop.id }], {onConflict: 'id'});
+    await sb.from('pb_employees').upsert([{ id: _USER.id, name: _PROFILE.name || '员工', email: _USER.email, shop_id: shop.id, gender: _PROFILE.gender || '男', position: '' }], {onConflict: 'id'});
     
     window.location.hash = `#/shop/${shop.id}`;
   },
@@ -211,9 +212,6 @@ const Shop = {
             <div class="form-row mb-10">
               <div style="flex:1"><label>开始时间</label><input type="time" id="cfgStart"/></div>
               <div style="flex:1"><label>结束时间</label><input type="time" id="cfgEnd"/></div>
-            </div>
-            <div class="form-row mb-10">
-              <div style="flex:1"><label>每日班次数量</label><input type="number" id="cfgCount" value="1" min="1" placeholder="每天有几个这样的班"/></div>
               <div style="flex:1"><label>每班所需人数</label><input type="number" id="cfgNeed" value="1" min="1" placeholder="每个班几个人"/></div>
             </div>
             <button class="btn btn-primary btn-block" onclick="Boss.addShift()">➕ 加入班次列表</button>
@@ -370,42 +368,28 @@ async function autoSchedule() {
   }
   
   try {
-    const expandedShifts = [];
-    c.shifts.forEach(s => {
-      const cnt = parseInt(s.count) || 1;
-      for(let i=1; i<=cnt; i++) {
-        expandedShifts.push({
-          id: s.id + '_' + i,
-          name: s.name + (cnt > 1 ? '#' + i : ''),
-          start: s.start,
-          end: s.end,
-          required: parseInt(s.required) || 1,
-          baseId: s.id
-        });
-      }
-    });
-
     const asgn = {};
     const weekTotal = {};
     emps.forEach(e => weekTotal[e.id] = 0);
 
     c.workDays.forEach(day => {
       asgn[day] = {};
-      expandedShifts.forEach(sh => {
+      c.shifts.forEach(sh => {
+        const required = parseInt(sh.required) || 1;
         // 1. 筛选 (Layer 1)
-        const cands = emps.filter(e => getAvailStatus(_DB.tt[e.id], day, sh.baseId) !== 'busy');
-        
+        const cands = emps.filter(e => getAvailStatus(_DB.tt[e.id], day, sh.id) !== 'busy');
+
         // 2. 排序 (Layer 2)
         cands.sort((a, b) => {
-          const statA = getAvailStatus(_DB.tt[a.id], day, sh.baseId);
-          const statB = getAvailStatus(_DB.tt[b.id], day, sh.baseId);
+          const statA = getAvailStatus(_DB.tt[a.id], day, sh.id);
+          const statB = getAvailStatus(_DB.tt[b.id], day, sh.id);
           if (statA === 'available' && statB === 'late') return -1;
           if (statA === 'late' && statB === 'available') return 1;
           return weekTotal[a.id] - weekTotal[b.id];
         });
 
         // 3. 选取 (Layer 3)
-        const picked = cands.slice(0, sh.required).map(e => e.id);
+        const picked = cands.slice(0, required).map(e => e.id);
         asgn[day][sh.id] = picked;
         picked.forEach(id => weekTotal[id]++);
       });
@@ -436,12 +420,11 @@ const Boss = {
     const n = document.getElementById('cfgName').value;
     const s = document.getElementById('cfgStart').value;
     const e = document.getElementById('cfgEnd').value;
-    const c = parseInt(document.getElementById('cfgCount').value) || 1;
     const r = parseInt(document.getElementById('cfgNeed').value) || 1;
-    
+
     if(!n||!s||!e) return toast('请完整填写信息','error');
-    
-    _DB.config.shifts.push({id: 's'+Date.now(), name:n, start:s, end:e, count: c, required: r});
+
+    _DB.config.shifts.push({id: 's'+Date.now(), name:n, start:s, end:e, required: r});
     await S.saveCfg(_DB.config);
     this.renderShiftList();
     this.renderGrid();
@@ -463,15 +446,26 @@ const Boss = {
         + '<div style="flex:2"><label>名称</label><input data-sid="'+s.id+'" data-field="name" value="'+s.name+'"/></div>'
         + '<div style="flex:1"><label>开始</label><input type="time" data-sid="'+s.id+'" data-field="start" value="'+s.start+'"/></div>'
         + '<div style="flex:1"><label>结束</label><input type="time" data-sid="'+s.id+'" data-field="end" value="'+s.end+'"/></div>'
-        + '</div><div class="form-row">'
-        + '<div style="flex:1"><label>每日数量</label><input type="number" min="1" data-sid="'+s.id+'" data-field="count" value="'+(s.count||1)+'"/></div>'
         + '<div style="flex:1"><label>每班人数</label><input type="number" min="1" data-sid="'+s.id+'" data-field="required" value="'+(s.required||1)+'"/></div>'
         + '<div style="flex:0;align-self:flex-end"><button class="btn btn-danger btn-sm" onclick="Boss.removeShift(\''+s.id+'\')">删除</button></div>'
         + '</div></div>';
     }).join('');
   },
   renderEmpList() {
-    document.getElementById('empMgmtList').innerHTML = _DB.emps.map(e => '<li><span>' + e.name + ' <small>' + e.email + '</small></span><button class="btn btn-danger btn-sm" onclick="ShopMgmt.removeMember(\'' + e.id + '\',\'' + e.name + '\')">移除</button></li>').join('') || '<li>暂无员工</li>';
+    document.getElementById('empMgmtList').innerHTML = _DB.emps.map(e => {
+      const g = e.gender || '?';
+      const p = e.position || '未设置';
+      return '<li>'
+        + '<span>' + e.name + ' <small>' + g + '</small> <small style="color:#888">' + e.email + '</small></span>'
+        + '<span style="display:flex;align-items:center;gap:6px">'
+        + '<input value="' + p + '" data-emp-id="' + e.id + '" placeholder="职位" style="width:80px;padding:4px 8px;font-size:12px" onchange="Boss.setPosition(\'' + e.id + '\', this.value)"/>'
+        + '<button class="btn btn-danger btn-sm" onclick="ShopMgmt.removeMember(\'' + e.id + '\',\'' + e.name + '\')">移除</button>'
+        + '</span></li>';
+    }).join('') || '<li>暂无员工</li>';
+  },
+  async setPosition(empId, position) {
+    await sb.from('pb_employees').update({ position }).eq('id', empId);
+    toast('职位已更新', 'success');
   },
   renderStatus() {
     const sub = _DB.emps.filter(e => _DB.tt[e.id]?.submitted).length;
@@ -482,34 +476,25 @@ const Boss = {
     if(!c.shifts.length||!emps.length) return el.innerHTML = '<div class="empty">请先配置班次并邀请员工</div>';
     
     const em={}; emps.forEach(e=>{em[e.id]=e});
-    
-    // 展开显示
-    const expanded = [];
-    c.shifts.forEach(s => { 
-      const count = parseInt(s.count) || 1;
-      for(let i=1; i<=count; i++) {
-        expanded.push({...s, sid: s.id+'_'+i, label: s.name + (count>1?`#${i}`:'')});
-      }
-    });
 
     let h='<table class="schedule-table"><thead><tr><th>班次</th>'+c.workDays.map(d=>`<th>${d}</th>`).join('')+'</tr></thead><tbody>';
-    expanded.forEach(sh => {
-      h += '<tr><td class="shift-label">' + sh.label + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
+    c.shifts.forEach(sh => {
+      const required = parseInt(sh.required) || 1;
+      h += '<tr><td class="shift-label">' + sh.name + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
       c.workDays.forEach(day => {
-        const k = day + '_' + sh.sid;
-        const ids = ov[k] || (sched.assignments[day] ? sched.assignments[day][sh.sid] : []) || [];
-        const shortage = ids.length < (sh.required || 1);
+        const ids = ov[day + '_' + sh.id] || (sched.assignments[day] ? sched.assignments[day][sh.id] : []) || [];
+        const shortage = ids.length < required;
         let cellHtml = ids.map(id => {
           const emp = em[id];
           const stat = getAvailStatus(_DB.tt[id], day, sh.id);
           const lateTag = stat === 'late' ? ' <small style="color:orange">(晚)</small>' : '';
           return '<span class="emp-tag">' + (emp ? emp.name : '?') + lateTag + '</span>';
         }).join('');
-        
+
         if (shortage) {
-          cellHtml += '<div class="shortage-tag">⚠️ 缺 ' + ((sh.required || 1) - ids.length) + ' 人</div>';
+          cellHtml += '<div class="shortage-tag">⚠️ 缺 ' + (required - ids.length) + ' 人</div>';
         }
-        
+
         h += '<td class="' + (shortage ? 'cell-shortage' : '') + '">' + cellHtml + '</td>';
       });
       h += '</tr>';
@@ -522,7 +507,7 @@ const Boss = {
       const s = _DB.config.shifts.find(x => x.id === input.dataset.sid);
       if (!s) return;
       const f = input.dataset.field, v = input.value;
-      if (f === 'count' || f === 'required') s[f] = parseInt(v) || 1;
+      if (f === 'required') s[f] = parseInt(v) || 1;
       else s[f] = v;
     });
     _DB.config.workDays = [...document.querySelectorAll('#workDayChecks input:checked')].map(i => i.value);
@@ -605,16 +590,12 @@ const EmpAvail = {
 
 const EmpSchedule = {
   render() {
-    const c=_DB.config, sched=_DB.sched, ov=sched.overrides;
+    const c=_DB.config, sched=_DB.sched, ov=sched.overrides || {};
     const cards = [];
-    
-    const expandedIds = [];
-    c.shifts.forEach(s => { for(let i=1; i<=s.count; i++) expandedIds.push({id: s.id+'_'+i, name: s.name+(s.count>1?`#${i}`:''), start: s.start, end: s.end}) });
 
     c.workDays.forEach(day=>{
-      expandedIds.forEach(sh=>{
-        const k=day+'_'+sh.id;
-        const ids = ov[k]||(sched.assignments[day]?sched.assignments[day][sh.id]:[])||[];
+      c.shifts.forEach(sh=>{
+        const ids = ov[day + '_' + sh.id] || (sched.assignments[day] ? sched.assignments[day][sh.id] : []) || [];
         if(ids.includes(_USER.id)) cards.push({day, sh});
       });
     });
@@ -692,5 +673,5 @@ function toast(msg, type='info') {
 }
 
 // === Init ===
-window.Auth = Auth; window.Onboarding = Onboarding; window.UI = UI; window.Boss = Boss; window.EmpAvail = EmpAvail; window.EmpSchedule = EmpSchedule; window.EmpMsg = EmpMsg; window.ShopMgmt = ShopMgmt;
+window.Auth = Auth; window.Onboarding = Onboarding; window.UI = UI; window.Boss = Boss; window.EmpAvail = EmpAvail; window.EmpSchedule = EmpSchedule; window.EmpMsg = EmpMsg; window.ShopMgmt = ShopMgmt; window.S = S;
 Router.init();
