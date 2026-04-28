@@ -442,14 +442,17 @@ const Boss = {
     if(!n||!s||!e) return toast('请完整填写信息','error');
     
     _DB.config.shifts.push({id: 's'+Date.now(), name:n, start:s, end:e, count: c, required: r});
-    // Removed automatic save - now user must click Publish or Save Template
-    this.init();
+    await S.saveCfg(_DB.config);
+    this.renderShiftList();
+    this.renderGrid();
     toast('已加入待发布列表','info');
   },
   async removeShift(id) {
     if (!confirm('确定要删除这个班次吗？')) return;
     _DB.config.shifts = _DB.config.shifts.filter(s => s.id !== id);
-    this.init();
+    await S.saveCfg(_DB.config);
+    this.renderShiftList();
+    this.renderGrid();
   },
   renderShiftList() {
     const el = document.getElementById('shiftCfgList');
