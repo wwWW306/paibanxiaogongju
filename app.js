@@ -176,12 +176,12 @@ const Shop = {
       headerActions.prepend(btn);
     }
     
-    this.render();
+    await this.render();
   },
-  render() {
+  async render() {
     const container = document.getElementById('shopContent');
     const nav = document.getElementById('shopNav');
-    
+
     if (_ROLE === 'boss') {
       nav.style.display = 'none';
       container.innerHTML = `
@@ -255,6 +255,7 @@ const Shop = {
           <div class="card" id="notifList"></div>
         </div>
       `;
+      await S.fetchAll();
       EmpAvail.renderGrid();
       EmpSchedule.render();
       EmpMsg.render();
@@ -577,7 +578,10 @@ const EmpAvail = {
     const tt = _DB.tt[_USER.id] || {busy:{}};
     tt.submitted = true;
     await S.saveTT(_USER.id, tt);
-    toast('课表已提交','success');
+    // 提交后自动触发排班
+    await S.fetchAll();
+    await autoSchedule();
+    toast('课表已提交，排班已自动更新','success');
   },
   async saveTemplate() {
     const tt = _DB.tt[_USER.id] || {busy:{}};
