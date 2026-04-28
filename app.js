@@ -499,7 +499,8 @@ const Boss = {
 
       groups[pos].forEach(sh => {
         const required = parseInt(sh.required) || 1;
-        h += '<tr><td class="shift-label">' + sh.name + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
+        const posTag = sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
+        h += '<tr><td class="shift-label">' + sh.name + posTag + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
         c.workDays.forEach(day => {
           const ids = ov[day + '_' + sh.id] || (sched.assignments[day] ? sched.assignments[day][sh.id] : []) || [];
           const shortage = ids.length < required;
