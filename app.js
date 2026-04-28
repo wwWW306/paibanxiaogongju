@@ -310,7 +310,7 @@ const S = {
     _DB.tt = {};
     if(tts) tts.forEach(t => { _DB.tt[t.emp_id] = {busy: t.busy_data, submitted: t.submitted} });
     const {data: sch} = await sb.from('pb_sched').select('*').eq('shop_id', sid).single();
-    _DB.sched = sch ? {assignments: sch.assignments, overrides: sch.overrides, at: sch.updated_at} : {assignments:{}, overrides:{}, at:''};
+    _DB.sched = sch ? {assignments: sch.assignments || {}, overrides: sch.overrides || {}, at: sch.updated_at} : {assignments:{}, overrides:{}, at:''};
     const {data: ns} = await sb.from('pb_notifs').select('*').eq('shop_id', sid).order('created_at', {ascending: false});
     _DB.notifs = ns || [];
   },
@@ -478,7 +478,7 @@ const Boss = {
     document.getElementById('subStatusList').innerHTML = `当前提交状态: <strong>${sub} / ${_DB.emps.length}</strong>`;
   },
   renderGrid() {
-    const c=_DB.config, emps=_DB.emps, sched=_DB.sched, ov=sched.overrides, el=document.getElementById('bossGrid');
+    const c=_DB.config, emps=_DB.emps, sched=_DB.sched, ov=sched.overrides || {}, el=document.getElementById('bossGrid');
     if(!c.shifts.length||!emps.length) return el.innerHTML = '<div class="empty">请先配置班次并邀请员工</div>';
     
     const em={}; emps.forEach(e=>{em[e.id]=e});
