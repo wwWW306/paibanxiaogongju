@@ -10,7 +10,7 @@ let _PROFILE = null;
 let _SHOP = null;
 let _ROLE = null; 
 let _DB = {
-  config: {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1},
+  config: {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1, minHoursPerShift:2},
   emps: [],
   tt: {},
   sched: {assignments:{}, overrides:{}, at:''},
@@ -188,6 +188,7 @@ const Shop = {
       container.innerHTML = `
         <div class="top-tabs">
           <button class="top-tab active" onclick="UI.switchBossTab('b-schedule')">📅 排班表</button>
+          <button class="top-tab" onclick="UI.switchBossTab('b-preview')">📋 下周预览</button>
           <button class="top-tab" onclick="UI.switchBossTab('b-config')">⚙️ 班次定义</button>
           <button class="top-tab" onclick="UI.switchBossTab('b-employees')">👥 员工管理</button>
           <button class="top-tab" onclick="UI.switchBossTab('b-status')">📋 状态</button>
@@ -195,6 +196,9 @@ const Shop = {
         <div class="tab-content active" id="b-schedule">
           <div class="status-bar"><div id="bossStatus">员工已选: <span id="bossPickCount">0</span></div></div>
           <div class="card" id="bossGrid"></div>
+        </div>
+        <div class="tab-content" id="b-preview">
+          <div class="card" id="previewGrid"></div>
         </div>
         <div class="tab-content" id="b-config">
           <div class="card-actions-bar" style="display:flex;gap:10px;margin-bottom:15px;padding:0 4px">
@@ -231,13 +235,13 @@ const Shop = {
     } else {
       nav.style.display = 'flex';
       container.innerHTML = `
-        <div class="tab-content active" id="emp-select">
-          <h2 style="font-size:1rem;margin-bottom:12px">📋 可选班次</h2>
-          <p class="card-hint">点击班次即可选择，每人每天限选一个班次</p>
+        <div class="tab-content active" id="emp-avail">
+          <h2 style="font-size:1rem;margin-bottom:12px">📋 选下周班次</h2>
+          <p class="card-hint">点击班次即可选择，每人每天限选一个，选择后职位锁定</p>
           <div id="shiftSelectList"></div>
         </div>
         <div class="tab-content" id="emp-schedule">
-          <h2 style="font-size:1rem;margin-bottom:12px">📅 我的班表</h2>
+          <h2 style="font-size:1rem;margin-bottom:12px">📅 当前班表</h2>
           <div id="myShiftCards"></div>
         </div>
         <div class="tab-content" id="emp-messages">
@@ -246,7 +250,7 @@ const Shop = {
         </div>
       `;
       await S.fetchAll();
-      EmpShift.render();
+      EmpAvail.render();
       EmpSchedule.render();
       EmpMsg.render();
     }
@@ -293,7 +297,7 @@ const S = {
     if(!_PROFILE.shop_id) return;
     const sid = _PROFILE.shop_id;
     const {data: cfg} = await sb.from('pb_config').select('data').eq('shop_id', sid).single();
-    _DB.config = cfg ? cfg.data : {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1};
+    _DB.config = cfg ? cfg.data : {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1, minHoursPerShift:2};
     const {data: emps} = await sb.from('pb_employees').select('*').eq('shop_id', sid);
     _DB.emps = emps || [];
     const {data: tts} = await sb.from('pb_tt').select('*').eq('shop_id', sid);
@@ -301,6 +305,13 @@ const S = {
     if(tts) tts.forEach(t => { _DB.tt[t.emp_id] = {busy: t.busy_data, submitted: t.submitted} });
     const {data: sch} = await sb.from('pb_sched').select('*').eq('shop_id', sid).single();
     _DB.sched = sch ? {assignments: sch.assignments || {}, overrides: sch.overrides || {}, at: sch.updated_at} : {assignments:{}, overrides:{}, at:''};
+    // 周次结转：如果存储的周次与当前周不同，自动结转选班
+    const storedWeek = _DB.sched.assignments._week_start;
+    const currentWeek = getWeekStart();
+    if (storedWeek && storedWeek !== currentWeek) {
+      _DB.sched.assignments._week_start = currentWeek;
+      await S.saveSched(_DB.sched.assignments);
+    }
     const {data: ns} = await sb.from('pb_notifs').select('*').eq('shop_id', sid).order('created_at', {ascending: false});
     _DB.notifs = ns || [];
   },
@@ -343,22 +354,30 @@ const S = {
 
 // === Scheduling Algorithm ===
 function getAvailStatus(tt, day, sid) {
-  // 只有提交了课表的员工才参与排班。未提交的默认为 busy (不能来)
-  if(!tt || !tt.submitted) return 'busy';
+  // 未提交视为全可用(full)，但标记为未提交
+  if(!tt || !tt.submitted) return 'available';
   const b = tt.busy[day];
   if(!b) return 'available';
-  if(!Array.isArray(b)) return b[sid] || 'available';
-  return b.includes(sid) ? 'busy' : 'available';
+  // 新格式: b[sid] = {status, earliest, latest}
+  const cell = b[sid];
+  if(!cell) return 'available';
+  if(cell.status === 'unavailable') return 'busy';
+  if(cell.status === 'partial') return 'late';
+  return 'available';
+}
+
+function getAvailDetail(tt, day, sid) {
+  if(!tt || !tt.busy) return null;
+  const b = tt.busy[day];
+  if(!b) return null;
+  return b[sid] || null;
 }
 
 async function autoSchedule() {
   console.log('--- Starting Auto-Schedule ---');
   const c = _DB.config, emps = _DB.emps;
-  if(!c.shifts.length || !emps.length) {
-    console.warn('AutoSchedule: No shifts or employees found.');
-    return;
-  }
-  
+  if(!c.shifts.length || !emps.length) return;
+
   try {
     const asgn = {};
     const weekTotal = {};
@@ -368,14 +387,14 @@ async function autoSchedule() {
       asgn[day] = {};
       c.shifts.forEach(sh => {
         const required = parseInt(sh.required) || 1;
-        // 1. 筛选 (Layer 1): 可用 + 职位匹配 (员工未设职位则不限制)
+        // 1. 筛选: 可用 + 职位匹配 (partial 视为晚到，仍可入选)
         const cands = emps.filter(e => {
           if (getAvailStatus(_DB.tt[e.id], day, sh.id) === 'busy') return false;
           if (sh.position && e.position && e.position !== sh.position) return false;
           return true;
         });
 
-        // 2. 排序 (Layer 2)
+        // 2. 排序: full 优先于 partial, 负载均衡
         cands.sort((a, b) => {
           const statA = getAvailStatus(_DB.tt[a.id], day, sh.id);
           const statB = getAvailStatus(_DB.tt[b.id], day, sh.id);
@@ -384,14 +403,13 @@ async function autoSchedule() {
           return weekTotal[a.id] - weekTotal[b.id];
         });
 
-        // 3. 选取 (Layer 3)
+        // 3. 选取
         const picked = cands.slice(0, required).map(e => e.id);
         asgn[day][sh.id] = picked;
         picked.forEach(id => weekTotal[id]++);
       });
     });
 
-    console.log('Generated assignments:', asgn);
     await S.saveSched(asgn);
     toast('自动排班已完成', 'success');
   } catch (err) {
@@ -468,8 +486,9 @@ const Boss = {
   renderStatus() {
     const asgn = _DB.sched.assignments || {};
     const picked = new Set();
-    Object.values(asgn).forEach(day => {
-      Object.values(day).forEach(ids => { ids.forEach(id => picked.add(id)); });
+    Object.keys(asgn).forEach(day => {
+      if (day.startsWith('_')) return;
+      Object.values(asgn[day] || {}).forEach(ids => { ids.forEach(id => picked.add(id)); });
     });
     document.getElementById('subStatusList').innerHTML = `已选班员工: <strong>${picked.size} / ${_DB.emps.length}</strong>`;
     const el = document.getElementById('bossPickCount');
@@ -477,6 +496,7 @@ const Boss = {
   },
   renderGrid() {
     const c=_DB.config, emps=_DB.emps, sched=_DB.sched, ov=sched.overrides || {}, el=document.getElementById('bossGrid');
+    if(!el) return; // 员工视图无此元素
     if(!c.shifts.length||!emps.length) return el.innerHTML = '<div class="empty">请先配置班次并邀请员工</div>';
 
     const em={}; emps.forEach(e=>{em[e.id]=e});
@@ -520,6 +540,104 @@ const Boss = {
     el.innerHTML = h+'</tbody></table>';
   },
   async resetAuto() { await autoSchedule(); await S.fetchAll(); this.renderGrid(); },
+  async renderPreview() {
+    await S.fetchAll();
+    const c=_DB.config, emps=_DB.emps, el=document.getElementById('previewGrid');
+    if(!el) return;
+    if(!c.shifts.length||!emps.length) return el.innerHTML = '<div class="empty">请先配置班次并邀请员工</div>';
+
+    // 统计提交状态
+    const submitted = emps.filter(e => _DB.tt[e.id] && _DB.tt[e.id].submitted);
+    const notSubmitted = emps.filter(e => !_DB.tt[e.id] || !_DB.tt[e.id].submitted);
+
+    // 运行排班算法生成预览
+    const preview = {};
+    const weekTotal = {};
+    emps.forEach(e => weekTotal[e.id] = 0);
+
+    c.workDays.forEach(day => {
+      preview[day] = {};
+      c.shifts.forEach(sh => {
+        const required = parseInt(sh.required) || 1;
+        const cands = emps.filter(e => {
+          if (getAvailStatus(_DB.tt[e.id], day, sh.id) === 'busy') return false;
+          if (sh.position && e.position && e.position !== sh.position) return false;
+          return true;
+        });
+        cands.sort((a, b) => {
+          const statA = getAvailStatus(_DB.tt[a.id], day, sh.id);
+          const statB = getAvailStatus(_DB.tt[b.id], day, sh.id);
+          if (statA === 'available' && statB === 'late') return -1;
+          if (statA === 'late' && statB === 'available') return 1;
+          return weekTotal[a.id] - weekTotal[b.id];
+        });
+        const picked = cands.slice(0, required).map(e => e.id);
+        preview[day][sh.id] = picked;
+        picked.forEach(id => weekTotal[id]++);
+      });
+    });
+
+    // 缓存预览结果，供"应用"使用
+    this._preview = preview;
+
+    const em={}; emps.forEach(e=>{em[e.id]=e});
+
+    // 提交状态栏
+    let html = '<div class="status-bar">'
+      + '<div class="status-info">✅ 已提交: <strong>' + submitted.length + '</strong> 人</div>'
+      + '<div class="status-info">⚠️ 未提交(默认全可用): <strong>' + notSubmitted.length + '</strong> 人';
+    if (notSubmitted.length) {
+      html += ' <span style="font-size:11px;color:#999">(' + notSubmitted.map(e=>e.name).join('、') + ')</span>';
+    }
+    html += '</div>'
+      + '<button class="btn btn-primary btn-sm" onclick="Boss.applyPreview()">✅ 应用为正式排班</button>'
+      + '</div>';
+
+    // 按职位分组渲染预览表
+    const groups = {};
+    c.shifts.forEach(sh => {
+      const pos = sh.position || '通用';
+      if (!groups[pos]) groups[pos] = [];
+      groups[pos].push(sh);
+    });
+
+    html += '<table class="schedule-table"><thead><tr><th>班次</th>'+c.workDays.map(d=>`<th>${d}</th>`).join('')+'</tr></thead><tbody>';
+
+    Object.keys(groups).forEach(pos => {
+      html += '<tr class="pos-header"><td colspan="' + (c.workDays.length + 1) + '" style="background:#f5f5f5;font-weight:700;padding:6px 10px;font-size:13px;text-align:left;color:#555">' + pos + '</td></tr>';
+      groups[pos].forEach(sh => {
+        const required = parseInt(sh.required) || 1;
+        const posTag = sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
+        html += '<tr><td class="shift-label">' + sh.name + posTag + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
+        c.workDays.forEach(day => {
+          const ids = preview[day] ? (preview[day][sh.id] || []) : [];
+          const shortage = ids.length < required;
+          let cellHtml = ids.map(id => {
+            const emp = em[id];
+            const stat = getAvailStatus(_DB.tt[id], day, sh.id);
+            const tag = stat === 'late' ? ' <small style="color:orange">(晚)</small>' : '';
+            const subTag = (!_DB.tt[id] || !_DB.tt[id].submitted) ? ' <small style="color:#999">⚠</small>' : '';
+            return '<span class="emp-tag">' + (emp ? emp.name : '?') + tag + subTag + '</span>';
+          }).join('');
+          if (shortage) cellHtml += '<div class="shortage-tag">⚠️ 缺 ' + (required - ids.length) + ' 人</div>';
+          html += '<td class="' + (shortage ? 'cell-shortage' : '') + '">' + cellHtml + '</td>';
+        });
+        html += '</tr>';
+      });
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  },
+  async applyPreview() {
+    if (!this._preview) return toast('请先生成预览', 'error');
+    if (!confirm('确认将预览排班应用为正式排班？当前排班将被覆盖。')) return;
+    this._preview._week_start = getWeekStart();
+    await S.saveSched(this._preview);
+    await S.fetchAll();
+    this._preview = null;
+    this.renderGrid();
+    toast('✅ 预览排班已应用！', 'success');
+  },
   async saveAllShifts(isPublish = false) {
     document.querySelectorAll('[data-sid]').forEach(input => {
       const s = _DB.config.shifts.find(x => x.id === input.dataset.sid);
@@ -537,111 +655,263 @@ const Boss = {
     }
   },
   async publish() {
-    if (!confirm('发布新班次将清空当前排班，员工需要重新选班，确认吗？')) return;
+    if (!confirm('确认发布新班次？员工已选的班次将保留。')) return;
     await this.saveAllShifts(true);
-    // 清空旧排班
-    await S.saveSched({});
+    // 保留员工已有的选班，更新周次
+    const asgn = _DB.sched.assignments || {};
+    asgn._week_start = getWeekStart();
+    await S.saveSched(asgn);
     await S.fetchAll();
     this.init();
-    toast('🚀 新班次已发布！员工可以开始选班', 'success');
+    toast('🚀 新班次已发布！员工选班已保留', 'success');
   }
 };
 
-// === Employee Shift Selection ===
-const EmpShift = {
-  _myPosition() {
-    const asgn = _DB.sched.assignments || {};
-    for (const day of Object.keys(asgn)) {
-      for (const sid of Object.keys(asgn[day] || {})) {
-        if ((asgn[day][sid] || []).includes(_USER.id)) {
-          const sh = _DB.config.shifts.find(s => s.id === sid);
-          if (sh && sh.position) return sh.position;
+// === Employee Availability (可用时间填报) ===
+const EmpAvail = {
+  _states: ['full', 'partial', 'unavailable'],
+  _labels: { full: '可上班', partial: '部分到岗', unavailable: '无法' },
+
+  init() {
+    const myTT = _DB.tt[_USER.id];
+    if (myTT && myTT.busy) {
+      this._data = JSON.parse(JSON.stringify(myTT.busy));
+      // 兼容旧格式：旧值为字符串 "available"/"busy"/"late"，转为对象 {status:...}
+      Object.keys(this._data).forEach(day => {
+        const entry = this._data[day];
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          Object.keys(entry).forEach(sid => {
+            if (typeof entry[sid] === 'string') {
+              const map = { available: 'full', busy: 'unavailable', late: 'partial' };
+              entry[sid] = { status: map[entry[sid]] || 'full' };
+            }
+          });
         }
-      }
+      });
+    } else {
+      this._data = {};
     }
-    return null;
   },
 
-  async claim(day, shiftId) {
-    const sh = _DB.config.shifts.find(s => s.id === shiftId);
-    if (!sh) return;
-    const myPos = this._myPosition();
+  _getCell(day, shiftId) {
+    if (!this._data[day]) this._data[day] = {};
+    if (!this._data[day][shiftId]) this._data[day][shiftId] = { status: 'full' };
+    return this._data[day][shiftId];
+  },
 
-    // 同一时间段职位不同？每个员工只能选一个职位
-    if (myPos && sh.position && sh.position !== myPos) {
-      return toast('你已选择「' + myPos + '」，不能混选其他职位。先取消已有班次再换', 'error');
-    }
+  cycleCell(day, shiftId) {
+    const cell = this._getCell(day, shiftId);
+    const idx = this._states.indexOf(cell.status);
+    cell.status = this._states[(idx + 1) % 3];
+    this.render();
+    toast(day + ' → ' + this._labels[cell.status], 'info');
+  },
 
-    if (!_DB.sched.assignments) _DB.sched.assignments = {};
-    if (!_DB.sched.assignments[day]) _DB.sched.assignments[day] = {};
+  setDayUnavailable(day) {
+    if (!this._data[day]) this._data[day] = {};
+    _DB.config.shifts.forEach(sh => {
+      this._data[day][sh.id] = { status: 'unavailable' };
+    });
+    this.render();
+    toast(day + ' 已全部标为不可用', 'info');
+  },
 
-    const required = parseInt(sh.required) || 1;
-    const picked = _DB.sched.assignments[day][shiftId] || [];
+  copyLastWeek() {
+    toast('暂无上周数据，请手动填报。提交后下周可复制本周数据。', 'info');
+  },
 
-    // 当天已选其他班次？先取消
-    Object.keys(_DB.sched.assignments[day] || {}).forEach(sid => {
-      if (sid !== shiftId && _DB.sched.assignments[day][sid]) {
-        _DB.sched.assignments[day][sid] = _DB.sched.assignments[day][sid].filter(id => id !== _USER.id);
-      }
+  async submit() {
+    const busy = {};
+    _DB.config.workDays.forEach(day => {
+      busy[day] = {};
+      _DB.config.shifts.forEach(sh => {
+        const cell = this._getCell(day, sh.id);
+        busy[day][sh.id] = {
+          status: cell.status || 'full'
+        };
+      });
     });
 
-    if (picked.includes(_USER.id)) {
-      _DB.sched.assignments[day][shiftId] = picked.filter(id => id !== _USER.id);
-      await S.saveSched(_DB.sched.assignments);
-      this.render();
-      EmpSchedule.render();
-      toast('已取消', 'info');
-    } else if (picked.length < required) {
-      _DB.sched.assignments[day][shiftId] = [...picked, _USER.id];
-      await S.saveSched(_DB.sched.assignments);
-      this.render();
-      EmpSchedule.render();
-      toast('选择成功！', 'success');
+    await S.saveTT(_USER.id, { busy, submitted: true });
+
+    // 触发局部重排：检查已排班次是否受影响
+    const asgn = _DB.sched.assignments || {};
+    let needReschedule = false;
+    _DB.config.workDays.forEach(day => {
+      _DB.config.shifts.forEach(sh => {
+        const ids = (asgn[day] && asgn[day][sh.id]) || [];
+        if (ids.includes(_USER.id)) {
+          const cell = busy[day][sh.id];
+          if (cell.status === 'unavailable') {
+            asgn[day][sh.id] = ids.filter(id => id !== _USER.id);
+            needReschedule = true;
+          }
+        }
+      });
+    });
+
+    if (needReschedule) {
+      asgn._week_start = getWeekStart();
+      await S.saveSched(asgn);
+      await S.fetchAll();
+      toast('提交成功！已自动调整排班', 'success');
     } else {
-      toast('该班次已满员', 'error');
+      toast('提交成功！', 'success');
     }
+    await S.fetchAll();
+    this.render();
+    EmpSchedule.render();
+    Boss.renderGrid();
   },
 
   render() {
-    const c = _DB.config, emps = _DB.emps, sched = _DB.sched, el = document.getElementById('shiftSelectList');
+    if (!this._data) this.init(); // 仅首次初始化，避免覆盖内存修改
+    const c = _DB.config, el = document.getElementById('shiftSelectList');
     if (!c.shifts.length) return el.innerHTML = '<div class="empty">老板尚未发布班次</div>';
 
-    const em = {}; emps.forEach(e => { em[e.id] = e; });
-    const myPos = this._myPosition();
+    const myTT = _DB.tt[_USER.id];
+    const submitted = myTT && myTT.submitted;
 
-    let html = myPos
-      ? '<div style="background:#f0f2ff;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:13px">你的职位：<strong style="color:#667eea">' + myPos + '</strong> <span style="color:#999;font-size:11px">（取消全部班次后可换职位）</span></div>'
-      : '<div style="background:#fff9c4;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-size:13px">请选择一个班次，选择后职位将锁定</div>';
+    let html = '';
+    // 状态栏
+    html += '<div class="avail-bar">'
+      + '<div class="avail-legend">'
+      + '<span><span class="avail-dot full"></span> 可上班(全程)</span>'
+      + '<span><span class="avail-dot partial"></span> 部分到岗</span>'
+      + '<span><span class="avail-dot unavailable"></span> 无法上班</span>'
+      + '</div>'
+      + '<div style="display:flex;gap:6px;margin-left:auto">'
+      + '<button class="btn btn-outline btn-sm" onclick="EmpAvail.copyLastWeek()">📋 同上周</button>'
+      + '<button class="btn btn-primary btn-sm" onclick="EmpAvail.submit()">' + (submitted ? '🔄 重新提交' : '📤 提交本周') + '</button>'
+      + '</div></div>';
 
-    c.workDays.forEach(day => {
-      html += '<div class="card" style="margin-bottom:10px"><h3>' + day + '</h3>';
-      c.shifts.forEach(sh => {
-        const required = parseInt(sh.required) || 1;
-        const picked = (sched.assignments && sched.assignments[day] && sched.assignments[day][sh.id]) || [];
-        const isMine = picked.includes(_USER.id);
-        const full = picked.length >= required && !isMine;
-        const posMismatch = myPos && sh.position && sh.position !== myPos;
-        const disabled = full || posMismatch;
-        const posTag = sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
-        const names = picked.map(id => em[id] ? em[id].name : '?').join(', ') || '—';
+    if (submitted) {
+      html += '<div style="background:#d5f5e3;padding:6px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#27ae60">✓ 已提交</div>';
+    } else {
+      html += '<div style="background:#fff9c4;padding:6px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#856404">⚠ 未提交，默认视为全部可上班。点击格子切换状态后提交。</div>';
+    }
 
-        html += '<div onclick="' + (disabled ? '' : 'EmpShift.claim(\'' + day + '\',\'' + sh.id + '\')') + '" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid ' + (isMine ? '#667eea' : '#eee') + ';border-radius:8px;margin-bottom:6px;cursor:' + (disabled ? 'not-allowed' : 'pointer') + ';background:' + (isMine ? '#f0f2ff' : (disabled ? '#f5f5f5' : '#fff')) + ';opacity:' + (disabled ? '0.5' : '1') + '">'
-          + '<div><strong>' + sh.name + '</strong>' + posTag + ' <small style="color:#888">' + sh.start + '-' + sh.end + '</small></div>'
-          + '<div style="font-size:12px;color:#888">' + names + ' <span style="color:#aaa">(' + picked.length + '/' + required + ')</span>'
-          + (isMine ? ' <span style="color:#667eea;font-weight:600">✓ 已选</span>' : (posMismatch ? ' <span style="color:#e67e22">其他职位</span>' : (full ? ' <span style="color:#e74c3c">已满</span>' : '')))
-          + '</div></div>';
+    // 网格
+    html += '<div class="avail-grid-wrapper"><table class="avail-table"><thead><tr><th>班次</th>';
+    c.workDays.forEach(d => { html += '<th>' + d + '</th>'; });
+    html += '</tr></thead><tbody>';
+
+    c.shifts.forEach(sh => {
+      html += '<tr><td style="font-weight:600;font-size:0.78rem">' + sh.name + '<br><small style="color:#888">' + sh.start + '-' + sh.end + '</small></td>';
+      c.workDays.forEach(day => {
+        const cell = this._getCell(day, sh.id);
+        const status = cell.status || 'full';
+        html += '<td class="avail-cell ' + status + '" onclick="EmpAvail.cycleCell(\'' + day + '\',\'' + sh.id + '\')">'
+          + '<span class="cell-status">' + this._labels[status] + '</span>'
+          + '</td>';
       });
-      html += '</div>';
+      html += '</tr>';
+      // 全天不可用按钮行
+      html += '<tr><td style="font-size:0.7rem;color:#999;padding:4px"></td>';
+      c.workDays.forEach(day => {
+        html += '<td style="padding:2px;text-align:center"><button class="btn btn-outline btn-sm" style="font-size:0.65rem;padding:2px 6px" onclick="EmpAvail.setDayUnavailable(\'' + day + '\')">整天不可用</button></td>';
+      });
+      html += '</tr>';
     });
+    html += '</tbody></table></div>';
+
+    html += '<p style="font-size:11px;color:#999;margin-top:8px">点击格子循环切换：可上班 → 部分到岗 → 无法上班 · 未提交默认可上班</p>';
     el.innerHTML = html;
   }
 };
 
+// === Shared helper ===
+function getMyPosition() {
+  const asgn = _DB.sched.assignments || {};
+  for (const day of Object.keys(asgn)) {
+    if (day.startsWith('_')) continue;
+    for (const sid of Object.keys(asgn[day] || {})) {
+      if ((asgn[day][sid] || []).includes(_USER.id)) {
+        const sh = _DB.config.shifts.find(s => s.id === sid);
+        if (sh && sh.position) return sh.position;
+      }
+    }
+  }
+  return null;
+}
+
+async function cancelClaim(day, shiftId) {
+  if (!_DB.sched.assignments || !_DB.sched.assignments[day]) return;
+  const picked = _DB.sched.assignments[day][shiftId] || [];
+  if (!picked.includes(_USER.id)) return;
+  _DB.sched.assignments[day][shiftId] = picked.filter(id => id !== _USER.id);
+  _DB.sched.assignments._week_start = getWeekStart();
+  await S.saveSched(_DB.sched.assignments);
+  EmpAvail.render();
+  EmpSchedule.render();
+  toast('已取消', 'info');
+}
+
+// === Employee Schedule (当前班表 - 含取消和换班) ===
 const EmpSchedule = {
+  _swapFrom: null,
+
+  startSwap(day, shiftId) {
+    this._swapFrom = { day, shiftId };
+    this.render();
+  },
+
+  cancelSwap() {
+    this._swapFrom = null;
+    this.render();
+  },
+
+  async completeSwap(targetDay, targetShiftId) {
+    if (!this._swapFrom) return;
+    const srcDay = this._swapFrom.day;
+    const srcSid = this._swapFrom.shiftId;
+
+    if (targetDay === srcDay) return toast('不能换到同一天', 'error');
+    if (!isFutureDay(targetDay)) return toast('只能换到本周还未开展的班次', 'error');
+
+    const sh = _DB.config.shifts.find(s => s.id === targetShiftId);
+    if (!sh) return;
+
+    const myPos = getMyPosition();
+    if (myPos && sh.position && sh.position !== myPos) {
+      return toast('职位不匹配', 'error');
+    }
+
+    const required = parseInt(sh.required) || 1;
+    const targetPicked = (_DB.sched.assignments[targetDay] && _DB.sched.assignments[targetDay][targetShiftId]) || [];
+    if (targetPicked.length >= required && !targetPicked.includes(_USER.id)) {
+      return toast('目标班次已满员', 'error');
+    }
+
+    // 当天有其他选中的先取消
+    if (_DB.sched.assignments[targetDay]) {
+      Object.keys(_DB.sched.assignments[targetDay]).forEach(sid => {
+        if (sid !== targetShiftId && _DB.sched.assignments[targetDay][sid]) {
+          _DB.sched.assignments[targetDay][sid] = _DB.sched.assignments[targetDay][sid].filter(id => id !== _USER.id);
+        }
+      });
+    }
+
+    // 释放旧班次
+    if (_DB.sched.assignments[srcDay] && _DB.sched.assignments[srcDay][srcSid]) {
+      _DB.sched.assignments[srcDay][srcSid] = _DB.sched.assignments[srcDay][srcSid].filter(id => id !== _USER.id);
+    }
+
+    // 选择新班次
+    if (!_DB.sched.assignments[targetDay]) _DB.sched.assignments[targetDay] = {};
+    _DB.sched.assignments[targetDay][targetShiftId] = [...targetPicked, _USER.id];
+    _DB.sched.assignments._week_start = getWeekStart();
+    this._swapFrom = null;
+    await S.saveSched(_DB.sched.assignments);
+    await S.fetchAll();
+    EmpAvail.render();
+    this.render();
+    toast('换班成功！', 'success');
+  },
+
   render() {
     const c=_DB.config, sched=_DB.sched;
     const cards = [];
-
     c.workDays.forEach(day=>{
       c.shifts.forEach(sh=>{
         const ids = (sched.assignments && sched.assignments[day] && sched.assignments[day][sh.id]) || [];
@@ -650,13 +920,68 @@ const EmpSchedule = {
     });
     const el = document.getElementById('myShiftCards');
     if(!cards.length) return el.innerHTML = '<div class="empty">暂未选择班次</div>';
-    el.innerHTML = cards.map(c => {
-      const posTag = c.sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + c.sh.position + '</span>' : '';
-      return '<div class="shift-card" style="justify-content:flex-start;gap:12px">'
-        + '<div class="sc-info"><div class="sc-date">' + c.day + '</div><div class="sc-time">' + c.sh.name + posTag + ' · ' + c.sh.start + '-' + c.sh.end + '</div></div>'
-        + '<button class="btn btn-outline btn-sm" onclick="EmpShift.claim(\'' + c.day + '\',\'' + c.sh.id + '\')">取消</button>'
+
+    const sw = this._swapFrom;
+    const myPos = getMyPosition();
+    const em = {}; _DB.emps.forEach(e => { em[e.id] = e; });
+    let html = '';
+
+    // 换班模式：顶部显示可选目标班次面板
+    if (sw) {
+      html += '<div style="background:#fff3cd;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        + '<span>🔄 正在换班：从 <strong>' + sw.day + '</strong> 换出，选择以下目标班次</span>'
+        + '<button class="btn btn-outline btn-sm" onclick="EmpSchedule.cancelSwap()">取消换班</button>'
         + '</div>';
-    }).join('');
+
+      // 收集所有可换目标班次
+      const targets = [];
+      c.workDays.forEach(day => {
+        if (day === sw.day) return; // 不能换同一天
+        if (!isFutureDay(day)) return; // 只能换未来天
+        c.shifts.forEach(sh => {
+          const required = parseInt(sh.required) || 1;
+          const picked = (sched.assignments && sched.assignments[day] && sched.assignments[day][sh.id]) || [];
+          const isFull = picked.length >= required && !picked.includes(_USER.id);
+          const posMatch = !myPos || !sh.position || sh.position === myPos;
+          if (isFull || !posMatch) return;
+          targets.push({ day, sh, picked, required });
+        });
+      });
+
+      if (targets.length === 0) {
+        html += '<div style="color:#999;font-size:12px;padding:8px">暂无可换的目标班次（未来天均已满或职位不匹配）</div>';
+      } else {
+        html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+        targets.forEach(t => {
+          const posTag = t.sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 4px;border-radius:3px;font-size:9px">' + t.sh.position + '</span>' : '';
+          const names = t.picked.map(id => em[id] ? em[id].name : '?').join(',') || '空缺';
+          html += '<div onclick="EmpSchedule.completeSwap(\'' + t.day + '\',\'' + t.sh.id + '\')" style="cursor:pointer;padding:8px 12px;border:1px solid #667eea;border-radius:8px;background:#fff;font-size:12px;transition:all .15s" onmouseover="this.style.background=\'#f0f2ff\'" onmouseout="this.style.background=\'#fff\'">'
+            + '<strong>' + t.day + '</strong> ' + t.sh.name + posTag
+            + '<br><small style="color:#888">' + t.sh.start + '-' + t.sh.end + ' · ' + names + ' (' + t.picked.length + '/' + t.required + ')</small>'
+            + '</div>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    // 已选班次卡片
+    cards.forEach(c => {
+      const posTag = c.sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + c.sh.position + '</span>' : '';
+      const isSwapSrc = sw && sw.day === c.day && sw.shiftId === c.sh.id;
+      html += '<div class="card" style="margin-bottom:8px;' + (isSwapSrc ? 'border:2px solid #e67e22;background:#fff8e1' : '') + '">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between">'
+        + '<div>'
+        + (isSwapSrc ? '<span style="color:#e67e22;font-weight:600;font-size:11px">🔄 待换出 </span>' : '')
+        + '<strong>' + c.day + '</strong> · ' + c.sh.name + posTag + ' <small style="color:#888">' + c.sh.start + '-' + c.sh.end + '</small>'
+        + '</div>'
+        + '<div class="sc-actions">'
+        + '<button class="btn btn-outline btn-sm" onclick="EmpSchedule.startSwap(\'' + c.day + '\',\'' + c.sh.id + '\')">换班</button>'
+        + '<button class="btn btn-outline btn-sm" onclick="cancelClaim(\'' + c.day + '\',\'' + c.sh.id + '\')">取消</button>'
+        + '</div></div></div>';
+    });
+    el.innerHTML = html;
   }
 };
 
@@ -707,15 +1032,40 @@ const UI = {
     document.getElementById(t).classList.add('active');
     document.querySelectorAll('.top-tab').forEach(b => b.classList.remove('active'));
     event.currentTarget.classList.add('active');
+    if(t === 'b-preview') Boss.renderPreview();
   },
   switchEmpTab(t) {
     document.querySelectorAll('#view-shop .tab-content').forEach(p => p.classList.remove('active'));
     document.getElementById('emp-' + t).classList.add('active');
     document.querySelectorAll('.bottom-tab').forEach(b => b.classList.remove('active'));
     event.currentTarget.classList.add('active');
+    if(t === 'avail') EmpAvail.render();
+    if(t === 'schedule') EmpSchedule.render();
     if(t === 'messages') EmpMsg.render();
   }
 };
+
+// === 周次 & 日期工具 ===
+function getTodayDayIndex() {
+  const d = new Date().getDay();
+  return d === 0 ? 7 : d; // 周一=1 ... 周日=7
+}
+function getDayIndex(dayName) {
+  const map = {'周一':1,'周二':2,'周三':3,'周四':4,'周五':5,'周六':6,'周日':7};
+  return map[dayName] || 0;
+}
+function isFutureDay(dayName) {
+  return getDayIndex(dayName) >= getTodayDayIndex();
+}
+function getWeekStart() {
+  const now = new Date();
+  const day = now.getDay();
+  const diff = day === 0 ? 6 : day - 1; // 周一为一周开始
+  const mon = new Date(now);
+  mon.setDate(now.getDate() - diff);
+  mon.setHours(0,0,0,0);
+  return mon.toISOString().split('T')[0];
+}
 
 function toast(msg, type='info') {
   const d = document.createElement('div'); d.className = 'toast ' + type; d.textContent = msg;
@@ -724,5 +1074,5 @@ function toast(msg, type='info') {
 }
 
 // === Init ===
-window.Auth = Auth; window.Onboarding = Onboarding; window.UI = UI; window.Boss = Boss; window.EmpShift = EmpShift; window.EmpSchedule = EmpSchedule; window.EmpMsg = EmpMsg; window.ShopMgmt = ShopMgmt; window.S = S;
+window.Auth = Auth; window.Onboarding = Onboarding; window.UI = UI; window.Boss = Boss; window.EmpAvail = EmpAvail; window.EmpSchedule = EmpSchedule; window.EmpMsg = EmpMsg; window.ShopMgmt = ShopMgmt; window.S = S; window.cancelClaim = cancelClaim;
 Router.init();

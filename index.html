@@ -105,8 +105,8 @@
 
     <!-- 底部导航 (仅员工端显示) -->
     <nav class="bottom-tabs" id="shopNav" style="display:none">
-      <button class="bottom-tab active" onclick="UI.switchEmpTab('select')">📋 可选班次</button>
-      <button class="bottom-tab" onclick="UI.switchEmpTab('schedule')">📅 我的班表</button>
+      <button class="bottom-tab active" onclick="UI.switchEmpTab('avail')">📋 选下周班次</button>
+      <button class="bottom-tab" onclick="UI.switchEmpTab('schedule')">📅 当前班表</button>
       <button class="bottom-tab" onclick="UI.switchEmpTab('messages')">💬 消息 <span class="notif-badge" id="notifBadge" style="display:none">0</span></button>
     </nav>
   </div>
@@ -139,7 +139,36 @@
     </div>
   </div>
 
-  <!-- 模态框等组件 (保留之前功能) -->
+  <!-- 可用时间编辑弹窗 -->
+  <div class="modal-overlay" id="availEditModal">
+    <div class="modal">
+      <h3 id="availEditTitle">班次编辑</h3>
+      <div class="avail-options">
+        <label class="avail-opt" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer">
+          <input type="radio" name="availStatus" value="full" checked onchange="EmpAvail.onStatusChange()"> <span>✓ 我可以全程上班</span>
+        </label>
+        <label class="avail-opt" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer">
+          <input type="radio" name="availStatus" value="partial" onchange="EmpAvail.onStatusChange()"> <span>⏰ 我可以部分到岗</span>
+        </label>
+        <div id="partialTimeInputs" style="display:none;padding:8px 12px;margin:-4px 0 8px 24px;background:#f9f9f9;border-radius:8px">
+          <div class="form-row">
+            <div><label>最早到岗时间</label><input type="time" id="earliestArrival"></div>
+            <div><label>最晚离岗时间</label><input type="time" id="latestDeparture"></div>
+          </div>
+          <p style="font-size:11px;color:#999;margin-top:4px" id="partialHint">有效到岗时长需 ≥ 最低要求</p>
+        </div>
+        <label class="avail-opt" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer">
+          <input type="radio" name="availStatus" value="unavailable" onchange="EmpAvail.onStatusChange()"> <span>✗ 我无法上班</span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-outline btn-sm" onclick="EmpAvail.closeModal()">取消</button>
+        <button class="btn btn-primary btn-sm" onclick="EmpAvail.saveCell()">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 旧的模态框 -->
   <div class="modal-overlay" id="cantWorkModal">...</div>
   <div class="modal-overlay" id="editCellModal">...</div>
 
