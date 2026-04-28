@@ -123,8 +123,8 @@ const Onboarding = {
     const name = document.getElementById('newShopName').value;
     if (!name) return toast('请输入店名','error');
     const invite_code = Math.random().toString().slice(2, 8); 
-    const { data: shop, error } = await sb.from('shops').insert([{ name, invite_code, boss_id: _USER.id }]).select().single();
-    if (error) return toast(error.message, 'error');
+    const { data: shop, error: shopErr } = await sb.from('shops').insert([{ name: name, boss_id: _USER.id, invite_code: invite_code }]).select().single();
+    if (shopErr) throw shopErr;
     
     await sb.from('profiles').update({ shop_id: shop.id, role: 'boss' }).eq('id', _USER.id);
     window.location.hash = `#/shop/${shop.id}`;
@@ -136,7 +136,7 @@ const Onboarding = {
     if (!shop) return toast('邀请码无效','error');
     
     await sb.from('profiles').update({ shop_id: shop.id, role: 'employee' }).eq('id', _USER.id);
-    await sb.from('pb_employees').upsert([{ id: _USER.id, name: _PROFILE.name, email: _USER.email, shop_id: shop.id }], {onConflict: 'id'});
+    await sb.from('pb_employees').upsert([{ id: _USER.id, name: _PROFILE.name || '员工', email: _USER.email, shop_id: shop.id }], {onConflict: 'id'});
     
     window.location.hash = `#/shop/${shop.id}`;
   },
@@ -176,7 +176,6 @@ const Shop = {
       headerActions.prepend(btn);
     }
     
-    await S.fetchAll();
     this.render();
   },
   render() {
@@ -314,10 +313,25 @@ const S = {
     const {data: ns} = await sb.from('pb_notifs').select('*').eq('shop_id', sid).order('created_at', {ascending: false});
     _DB.notifs = ns || [];
   },
-  async saveCfg(c) { await sb.from('pb_config').upsert({shop_id: _PROFILE.shop_id, data: c}, {onConflict: 'shop_id'}); },
-  async saveTT(id, t) { await sb.from('pb_tt').upsert({emp_id: id, shop_id: _PROFILE.shop_id, busy_data: t.busy, submitted: t.submitted, updated_at: new Date()}, {onConflict: 'emp_id,shop_id'}); },
-  async saveSched(assignments) { await sb.from('pb_sched').upsert({shop_id: _PROFILE.shop_id, assignments, updated_at: new Date()}, {onConflict: 'shop_id'}); },
-  async saveOv(overrides) { await sb.from('pb_sched').upsert({shop_id: _PROFILE.shop_id, overrides, updated_at: new Date()}, {onConflict: 'shop_id'}); },
+  async saveCfg(c) {
+    const { error } = await sb.from('pb_config').upsert({shop_id: _PROFILE.shop_id, data: c}, {onConflict: 'shop_id'});
+    if (error) { console.error('saveCfg Error:', error); throw error; }
+  },
+  async saveTT(id, t) {
+    const { error } = await sb.from('pb_tt').upsert({emp_id: id, shop_id: _PROFILE.shop_id, busy_data: t.busy, submitted: t.submitted, updated_at: new Date()}, {onConflict: 'emp_id,shop_id'});
+    if (error) { console.error('saveTT Error:', error); throw error; }
+  },
+  async saveSched(assignments) {
+    const { error } = await sb.from('pb_sched').upsert(
+      { shop_id: _PROFILE.shop_id, assignments, updated_at: new Date() },
+      { onConflict: 'shop_id' }
+    );
+    if (error) { console.error('saveSched Error:', error); throw error; }
+  },
+  async saveOv(overrides) {
+    const { error } = await sb.from('pb_sched').upsert({shop_id: _PROFILE.shop_id, overrides, updated_at: new Date()}, {onConflict: 'shop_id'});
+    if (error) { console.error('saveOv Error:', error); throw error; }
+  },
   async addNotif(to, text, type, data) {
     const { data: res } = await sb.from('pb_notifs').insert([{to_id: to, shop_id: _PROFILE.shop_id, text, type, data}]).select().single();
     if (res) {
@@ -338,7 +352,8 @@ const S = {
 
 // === Scheduling Algorithm ===
 function getAvailStatus(tt, day, sid) {
-  if(!tt || !tt.submitted) return 'available';
+  // 只有提交了课表的员工才参与排班。未提交的默认为 busy (不能来)
+  if(!tt || !tt.submitted) return 'busy';
   const b = tt.busy[day];
   if(!b) return 'available';
   if(!Array.isArray(b)) return b[sid] || 'available';
@@ -346,41 +361,67 @@ function getAvailStatus(tt, day, sid) {
 }
 
 async function autoSchedule() {
+  console.log('--- Starting Auto-Schedule ---');
   const c = _DB.config, emps = _DB.emps;
-  if(!c.shifts.length || !emps.length) return;
+  if(!c.shifts.length || !emps.length) {
+    console.warn('AutoSchedule: No shifts or employees found.');
+    return;
+  }
   
-  const expandedShifts = [];
-  c.shifts.forEach(s => {
-    for(let i=1; i<=s.count; i++) {
-      expandedShifts.push({
-        id: s.id + '_' + i,
-        name: s.name + (s.count > 1 ? '#' + i : ''),
-        start: s.start,
-        end: s.end,
-        required: s.required || 1,
-        baseId: s.id
-      });
-    }
-  });
-
-  const asgn={}; const total={}; emps.forEach(e=>{total[e.id]=0});
-  c.workDays.forEach(day=>{
-    asgn[day]={}; const dc={}; emps.forEach(e=>{dc[e.id]=0});
-    expandedShifts.forEach(sh=>{
-      const cands = emps.filter(e => dc[e.id] < c.maxShiftsPerDay && isFree(_DB.tt[e.id], day, sh.start, sh.end, sh.baseId));
-      cands.sort((a,b) => total[a.id] - total[b.id]);
-      const picked = cands.slice(0, sh.required).map(e=>e.id);
-      asgn[day][sh.id] = picked;
-      picked.forEach(id => {total[id]++; dc[id]++});
+  try {
+    const expandedShifts = [];
+    c.shifts.forEach(s => {
+      const cnt = parseInt(s.count) || 1;
+      for(let i=1; i<=cnt; i++) {
+        expandedShifts.push({
+          id: s.id + '_' + i,
+          name: s.name + (cnt > 1 ? '#' + i : ''),
+          start: s.start,
+          end: s.end,
+          required: parseInt(s.required) || 1,
+          baseId: s.id
+        });
+      }
     });
-  });
-  await S.saveSched(asgn);
-  toast('自动排班已完成','success');
+
+    const asgn = {};
+    const weekTotal = {};
+    emps.forEach(e => weekTotal[e.id] = 0);
+
+    c.workDays.forEach(day => {
+      asgn[day] = {};
+      expandedShifts.forEach(sh => {
+        // 1. 筛选 (Layer 1)
+        const cands = emps.filter(e => getAvailStatus(_DB.tt[e.id], day, sh.baseId) !== 'busy');
+        
+        // 2. 排序 (Layer 2)
+        cands.sort((a, b) => {
+          const statA = getAvailStatus(_DB.tt[a.id], day, sh.baseId);
+          const statB = getAvailStatus(_DB.tt[b.id], day, sh.baseId);
+          if (statA === 'available' && statB === 'late') return -1;
+          if (statA === 'late' && statB === 'available') return 1;
+          return weekTotal[a.id] - weekTotal[b.id];
+        });
+
+        // 3. 选取 (Layer 3)
+        const picked = cands.slice(0, sh.required).map(e => e.id);
+        asgn[day][sh.id] = picked;
+        picked.forEach(id => weekTotal[id]++);
+      });
+    });
+
+    console.log('Generated assignments:', asgn);
+    await S.saveSched(asgn);
+    toast('自动排班已完成', 'success');
+  } catch (err) {
+    console.error('AutoSchedule critical error:', err);
+    toast('自动排班失败: ' + err.message, 'error');
+  }
 }
 
 // === Boss Logic ===
 const Boss = {
-  init() { this.renderWorkDays(); this.renderShiftList(); this.renderEmpList(); this.renderGrid(); this.renderStatus(); },
+  async init() { await S.fetchAll(); this.renderWorkDays(); this.renderShiftList(); this.renderEmpList(); this.renderGrid(); this.renderStatus(); },
   renderWorkDays() {
     const all=['周一','周二','周三','周四','周五','周六','周日'], c=_DB.config;
     document.getElementById('workDayChecks').innerHTML = all.map(d => `<label><input type="checkbox" value="${d}" ${c.workDays.includes(d)?'checked':''} onchange="Boss.save()"/> ${d}</label>`).join('');
@@ -489,6 +530,7 @@ const Boss = {
   },
   async publish() {
     if (!confirm('发布新排班将立即重新计算并覆盖当前排班表，确认发布吗？')) return;
+    console.log('Publishing with employees:', _DB.emps);
     await this.saveAllShifts(true);
     await autoSchedule();
     await S.fetchAll();
