@@ -160,7 +160,8 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 .btn-block{width:100%;justify-content:center}
 
 /* ===== Schedule Table (Boss) ===== */
-.schedule-table{width:100%;border-collapse:collapse;table-layout:fixed}
+#bossGrid, #previewGrid { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.schedule-table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:600px}
 .schedule-table th,.schedule-table td{border:1px solid #e8e8e8;padding:8px;text-align:center;vertical-align:top;min-width:90px}
 .schedule-table th{background:#f8f9fa;font-weight:600;font-size:.8rem;color:#555}
 .schedule-table .shift-label{font-weight:500;font-size:.8rem;background:#f8f9fa}
@@ -215,7 +216,93 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 .settings-panel .field .value{font-size:.9rem;color:#333}
 
 /* ===== Responsive ===== */
-@media(max-width:600px){.form-row{flex-direction:column}.schedule-table{font-size:.72rem}.role-btns{flex-direction:column}}
+@media(max-width:768px){
+  /* 全局 */
+  html,body{font-size:15px}
+  .main-content{padding:10px}
+
+  /* 卡片 */
+  .card{padding:12px;margin-bottom:10px;border-radius:10px}
+  .card h2{font-size:.95rem}
+
+  /* 表单 */
+  .form-row{flex-direction:column;gap:8px}
+  .form-row > div{min-width:100%}
+  input[type="text"],input[type="number"],input[type="time"],input[type="email"],input[type="password"],select{padding:12px 10px;font-size:16px}
+
+  /* 按钮 - 44px 最小触摸目标 */
+  .btn{padding:10px 14px;font-size:.85rem;min-height:44px}
+  .btn-sm{padding:8px 12px;font-size:.8rem;min-height:38px}
+
+  /* 顶部导航 */
+  .app-header{padding:10px 12px}
+  .app-header h1{font-size:1rem}
+  .header-btn{font-size:1.4rem;padding:8px}
+
+  /* 老板标签 */
+  .top-tabs{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .top-tab{padding:12px 14px;font-size:.8rem;white-space:nowrap;flex-shrink:0;min-height:44px}
+
+  /* 底部导航 */
+  .bottom-tabs{position:sticky;bottom:0;z-index:50;box-shadow:0 -2px 10px rgba(0,0,0,.08)}
+  .bottom-tab{padding:8px 0 4px;font-size:.65rem}
+  .bottom-tab .tab-icon{font-size:1.4rem}
+
+  /* 排班表格 - 水平滚动 */
+  .schedule-table{font-size:.7rem;min-width:600px}
+  .schedule-table th,.schedule-table td{padding:6px 4px;min-width:55px}
+  .schedule-table .shift-label{font-size:.7rem}
+  .emp-tag{font-size:.68rem;padding:2px 5px}
+
+  /* 可用时间网格 */
+  .avail-grid-wrapper{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -10px;padding:0 10px}
+  .avail-table{min-width:550px;font-size:.7rem}
+  .avail-table th,.avail-table td{padding:5px 3px}
+  .avail-cell{height:44px;min-width:44px}
+  .avail-cell .cell-status{font-size:.7rem}
+  .avail-bar{flex-direction:column;gap:8px;align-items:flex-start;font-size:.75rem}
+  .avail-legend{gap:10px;flex-wrap:wrap}
+
+  /* 状态栏 */
+  .status-bar{flex-direction:column;gap:6px;font-size:.8rem}
+
+  /* 班次卡片 */
+  .shift-card{flex-direction:column;gap:10px;padding:12px}
+  .sc-actions{justify-content:flex-end}
+
+  /* 消息 */
+  .notif-item{padding:12px;gap:8px}
+  .notif-body .notif-text{font-size:.8rem}
+  .notif-actions{flex-wrap:wrap}
+  .notif-actions .btn-sm{min-height:38px}
+
+  /* 弹窗 */
+  .modal-overlay{padding:10px;align-items:flex-end}
+  .modal{max-width:100%;border-radius:16px 16px 0 0;max-height:85vh;padding:20px 16px}
+  .modal h3{font-size:.95rem}
+
+  /* Toast */
+  .toast-container{top:10px;right:10px;left:10px}
+  .toast{max-width:100%;font-size:.8rem}
+
+  /* 登录 */
+  .login-container{padding:24px 20px;border-radius:14px}
+  .login-card{padding:32px 24px}
+
+  /* 员工列表 */
+  .emp-list li{flex-direction:column;gap:8px;align-items:flex-start;padding:10px 0}
+  .emp-list li > span:last-child{width:100%;justify-content:space-between}
+
+  /* 配置列表 */
+  .config-list li{flex-direction:column;gap:6px;align-items:flex-start}
+
+  /* Checkbox */
+  .checkbox-group{gap:10px}
+  .checkbox-group label{font-size:.8rem}
+
+  /* 换班面板 */
+  .sc-btn{min-height:38px;padding:8px 12px;font-size:.8rem}
+}
 .cell-shortage { background-color: #fff9c4 !important; position: relative; }
 .shortage-tag { font-size: 10px; color: #f57f17; margin-top: 4px; font-weight: 600; display: block; }
 .emp-tag small { margin-left: 2px; font-size: 9px; }

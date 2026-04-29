@@ -426,6 +426,7 @@ async function refillShift(day, shiftId) {
 
   // 筛选候选人
   const cands = emps.filter(e => {
+    if (e.id === _SHOP.boss_id) return false;            // 老板不参与排班
     if (current.includes(e.id)) return false;         // 已在当前班次
     if (busyOnDay.has(e.id)) return false;            // 当天已有其他班次
     if (getAvailStatus(_DB.tt[e.id], day, shiftId) === 'busy') return false; // 不可用
@@ -477,6 +478,7 @@ async function autoSchedule() {
         const required = parseInt(sh.required) || 1;
         // 1. 筛选: 可用 + 职位匹配 (partial 视为晚到，仍可入选)
         const cands = emps.filter(e => {
+          if (e.id === _SHOP.boss_id) return false; // 老板不参与排班
           if (getAvailStatus(_DB.tt[e.id], day, sh.id) === 'busy') return false;
           if (sh.position && e.position && e.position !== sh.position) return false;
           return true;
@@ -648,6 +650,7 @@ const Boss = {
       c.shifts.forEach(sh => {
         const required = parseInt(sh.required) || 1;
         const cands = emps.filter(e => {
+          if (e.id === _SHOP.boss_id) return false; // 老板不参与排班
           if (getAvailStatus(_DB.tt[e.id], day, sh.id) === 'busy') return false;
           if (sh.position && e.position && e.position !== sh.position) return false;
           return true;
