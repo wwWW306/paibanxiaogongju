@@ -26,24 +26,24 @@ const Router = {
   async handleRoute() {
     const hash = window.location.hash || '#/login';
     const { data: { session } } = await sb.auth.getSession();
-    
+
     if (!session && hash !== '#/login') {
       window.location.hash = '#/login';
       return;
     }
-    
+
     if (session) {
       _USER = session.user;
       await this.syncProfile();
-      
+
       if (hash === '#/login') {
-        if (!_PROFILE.shop_id) window.location.hash = '#/onboarding';
-        else window.location.hash = `#/shop/${_PROFILE.shop_id}`;
+        if (_PROFILE.shop_id) window.location.hash = `#/shop/${_PROFILE.shop_id}`;
+        else window.location.hash = '#/settings';
         return;
       }
 
-      if (!_PROFILE.shop_id && !hash.includes('onboarding') && !hash.includes('settings')) {
-        window.location.hash = '#/onboarding';
+      if (!_PROFILE.shop_id && !hash.includes('settings')) {
+        window.location.hash = '#/settings';
         return;
       }
     }
@@ -51,7 +51,7 @@ const Router = {
     const parts = hash.replace('#/', '').split('/');
     const route = parts[0] || 'login';
     const param = parts[1];
-    
+
     this.showView(route, param);
   },
   async syncProfile() {
@@ -88,11 +88,40 @@ const Auth = {
     try {
       let res;
       if (mode === 'signup') {
+        // 验证邀请码
+        const inviteCode = document.getElementById('signupInviteCode').value.trim();
+        if (!inviteCode) return toast('请输入邀请码', 'error');
+
+        const { data: codeData, error: codeErr } = await sb.from('pb_invite_codes').select('*').eq('code', inviteCode).single();
+        if (codeErr || !codeData) return toast('邀请码无效，请检查后重试', 'error');
+
         const genderEl = document.getElementById('signupGender');
         const gender = genderEl ? genderEl.value : '男';
         res = await sb.auth.signUp({ email, password, options: { data: { gender } } });
         if (res.error) throw res.error;
-        toast('注册成功！正在自动登录...', 'success');
+
+        if (res.data.user) {
+          _USER = res.data.user;
+
+          if (codeData.shop_id) {
+            // 邀请码已有店铺 → 加入为员工
+            await sb.from('profiles').upsert({ id: _USER.id, email, role: 'employee', shop_id: codeData.shop_id, name: email.split('@')[0], gender }, { onConflict: 'id' });
+            await sb.from('pb_employees').upsert({ id: _USER.id, name: email.split('@')[0], email, shop_id: codeData.shop_id, gender, position: '' }, { onConflict: 'id' });
+            toast('注册成功！已加入店铺', 'success');
+          } else {
+            // 邀请码未使用 → 创建新店铺，用户为老板
+            const shopName = document.getElementById('signupShopName').value.trim() || codeData.shop_name || '我的店铺';
+            const { data: shop, error: shopErr } = await sb.from('shops').insert([{ name: shopName, boss_id: _USER.id, invite_code: inviteCode }]).select().single();
+            if (shopErr) throw shopErr;
+
+            await sb.from('pb_invite_codes').update({ shop_id: shop.id, shop_name: shopName }).eq('code', inviteCode);
+            await sb.from('profiles').upsert({ id: _USER.id, email, role: 'boss', shop_id: shop.id, name: email.split('@')[0], gender }, { onConflict: 'id' });
+            await sb.from('pb_employees').upsert({ id: _USER.id, name: email.split('@')[0], email, shop_id: shop.id, gender, position: '' }, { onConflict: 'id' });
+            toast('注册成功！店铺已创建', 'success');
+          }
+          await Router.handleRoute();
+          return;
+        }
       } else {
         res = await sb.auth.signInWithPassword({ email, password });
         if (res.error) throw res.error;
@@ -118,33 +147,15 @@ const Auth = {
   }
 };
 
-// === Onboarding ===
+// === Onboarding (保留 updateProfile 供设置页使用) ===
 const Onboarding = {
-  async createShop() {
-    const name = document.getElementById('newShopName').value;
-    if (!name) return toast('请输入店名','error');
-    const invite_code = Math.random().toString().slice(2, 8); 
-    const { data: shop, error: shopErr } = await sb.from('shops').insert([{ name: name, boss_id: _USER.id, invite_code: invite_code }]).select().single();
-    if (shopErr) throw shopErr;
-    
-    await sb.from('profiles').update({ shop_id: shop.id, role: 'boss' }).eq('id', _USER.id);
-    window.location.hash = `#/shop/${shop.id}`;
-  },
-  async joinShop() {
-    const code = document.getElementById('inviteCode').value;
-    if (!code) return toast('请输入邀请码','error');
-    const { data: shop } = await sb.from('shops').select('*').eq('invite_code', code).single();
-    if (!shop) return toast('邀请码无效','error');
-    
-    await sb.from('profiles').update({ shop_id: shop.id, role: 'employee' }).eq('id', _USER.id);
-    await sb.from('pb_employees').upsert([{ id: _USER.id, name: _PROFILE.name || '员工', email: _USER.email, shop_id: shop.id, gender: _PROFILE.gender || '男', position: '' }], {onConflict: 'id'});
-    
-    window.location.hash = `#/shop/${shop.id}`;
-  },
   async updateProfile() {
     const name = document.getElementById('profileName').value;
+    const email = document.getElementById('profileEmail').value.trim();
     await sb.from('profiles').update({ name }).eq('id', _USER.id);
-    await sb.from('pb_employees').update({ name }).eq('id', _USER.id);
+    if (email) {
+      await sb.from('pb_employees').update({ email }).eq('id', _USER.id);
+    }
     toast('保存成功','success');
   }
 };
@@ -154,7 +165,7 @@ const Shop = {
   async init(id) {
     if (!id || id !== _PROFILE.shop_id) {
       await Router.syncProfile();
-      if (!_PROFILE.shop_id) return window.location.hash = '#/onboarding';
+      if (!_PROFILE.shop_id) return window.location.hash = '#/settings';
     }
     
     const { data: shop } = await sb.from('shops').select('*').eq('id', _PROFILE.shop_id).single();
@@ -225,7 +236,8 @@ const Shop = {
         </div>
         <div class="tab-content" id="b-employees">
           <div class="card"><h2>团队成员</h2><ul class="emp-list" id="empMgmtList"></ul></div>
-          <div class="card mt-20"><h3>邀请码: <strong style="color:var(--primary-color)">${_SHOP.invite_code}</strong></h3><p style="font-size:12px;color:#999">员工注册后输入此代码即可加入。</p></div>
+          <div class="card mt-20"><h3>邀请码: <strong style="color:var(--primary-color)">${_SHOP.invite_code}</strong></h3><p style="font-size:12px;color:#999">员工注册时输入此邀请码即可自动加入本店。如需更换邀请码，请生成新码。</p>
+          <button class="btn btn-outline btn-sm mt-20" onclick="Boss.genInviteCode()">🔑 生成新的邀请码</button></div>
         </div>
         <div class="tab-content" id="b-status">
            <div class="card"><h2>提交状态</h2><div id="subStatusList"></div></div>
@@ -259,8 +271,19 @@ const Shop = {
 
 // === Settings ===
 const Settings = {
-  init() {
+  async init() {
+    // 确保基础数据已加载
+    if (_PROFILE.shop_id && !_SHOP) {
+      const { data: shop } = await sb.from('shops').select('*').eq('id', _PROFILE.shop_id).single();
+      _SHOP = shop;
+    }
+    if (_PROFILE.shop_id && !_DB.emps.length) {
+      const { data: emps } = await sb.from('pb_employees').select('*').eq('shop_id', _PROFILE.shop_id);
+      _DB.emps = emps || [];
+    }
     document.getElementById('profileName').value = _PROFILE.name || '';
+    const myEmp = _DB.emps.find(e => e.id === _USER.id);
+    document.getElementById('profileEmail').value = (myEmp && myEmp.email) || _USER.email || '';
     document.getElementById('currentShopIdDisplay').textContent = _PROFILE.shop_id || '--';
     document.getElementById('currentInviteCodeDisplay').textContent = _SHOP ? _SHOP.invite_code : '--';
     const leaveCard = document.getElementById('leaveShopCard');
@@ -277,7 +300,7 @@ const ShopMgmt = {
     await sb.from('profiles').update({ shop_id: null, role: null }).eq('id', _USER.id);
     _PROFILE.shop_id = null; _ROLE = null; _SHOP = null;
     toast('已退出店铺', 'success');
-    window.location.hash = '#/onboarding';
+    window.location.hash = '#/settings';
   },
   async removeMember(empId, empName) {
     if (!confirm('确定要将 "' + empName + '" 移出店铺吗？')) return;
@@ -371,6 +394,71 @@ function getAvailDetail(tt, day, sid) {
   const b = tt.busy[day];
   if(!b) return null;
   return b[sid] || null;
+}
+
+// 自动补位：当某天某班次空缺时，从可用员工中挑选最佳人选填补
+async function refillShift(day, shiftId) {
+  // 不能修改当天及过去的班次
+  if (!isFutureDay(day)) return null;
+
+  const c = _DB.config, emps = _DB.emps, asgn = _DB.sched.assignments || {};
+  const sh = c.shifts.find(s => s.id === shiftId);
+  if (!sh) return null;
+
+  const required = parseInt(sh.required) || 1;
+  const current = (asgn[day] && asgn[day][shiftId]) || [];
+  const vacant = required - current.length;
+  if (vacant <= 0) return null;
+
+  // 该天已被安排其他班次的员工（每人每天限选一个）
+  const busyOnDay = new Set();
+  if (asgn[day]) {
+    Object.values(asgn[day]).forEach(ids => { ids.forEach(id => busyOnDay.add(id)); });
+  }
+
+  // 本周已排班次计数（负载均衡）
+  const weekTotal = {};
+  emps.forEach(e => { weekTotal[e.id] = 0; });
+  Object.keys(asgn).forEach(d => {
+    if (d.startsWith('_')) return;
+    Object.values(asgn[d] || {}).forEach(ids => { ids.forEach(id => { weekTotal[id] = (weekTotal[id] || 0) + 1; }); });
+  });
+
+  // 筛选候选人
+  const cands = emps.filter(e => {
+    if (current.includes(e.id)) return false;         // 已在当前班次
+    if (busyOnDay.has(e.id)) return false;            // 当天已有其他班次
+    if (getAvailStatus(_DB.tt[e.id], day, shiftId) === 'busy') return false; // 不可用
+    if (sh.position && e.position && e.position !== sh.position) return false; // 职位不匹配
+    return true;
+  });
+
+  // 排序：full优先 > partial，然后负载均衡
+  cands.sort((a, b) => {
+    const statA = getAvailStatus(_DB.tt[a.id], day, shiftId);
+    const statB = getAvailStatus(_DB.tt[b.id], day, shiftId);
+    if (statA === 'available' && statB === 'late') return -1;
+    if (statA === 'late' && statB === 'available') return 1;
+    return (weekTotal[a.id] || 0) - (weekTotal[b.id] || 0);
+  });
+
+  const filled = [];
+  for (let i = 0; i < vacant && i < cands.length; i++) {
+    const pick = cands[i];
+    if (!asgn[day]) asgn[day] = {};
+    if (!asgn[day][shiftId]) asgn[day][shiftId] = [];
+    asgn[day][shiftId].push(pick.id);
+    busyOnDay.add(pick.id);
+    weekTotal[pick.id] = (weekTotal[pick.id] || 0) + 1;
+    filled.push(pick);
+  }
+
+  if (filled.length > 0) {
+    asgn._week_start = getWeekStart();
+    await S.saveSched(asgn);
+    return filled;
+  }
+  return null;
 }
 
 async function autoSchedule() {
@@ -634,9 +722,35 @@ const Boss = {
     this._preview._week_start = getWeekStart();
     await S.saveSched(this._preview);
     await S.fetchAll();
+    const preview = this._preview;
     this._preview = null;
     this.renderGrid();
     toast('✅ 预览排班已应用！', 'success');
+
+    // 邮件通知所有被排班的员工
+    const affected = new Set();
+    Object.keys(preview).forEach(day => {
+      if (day.startsWith('_')) return;
+      Object.values(preview[day] || {}).forEach(ids => { ids.forEach(id => affected.add(id)); });
+    });
+    const subject = _SHOP.name + ' - 排班已更新';
+    const text = buildScheduleEmail(_SHOP.name, '下周排班已正式应用，请登录查看您的排班安排。如有疑问请联系老板。');
+    for (const empId of affected) {
+      await notifyEmp(empId, subject, text);
+    }
+    if (affected.size > 0) toast('已发送邮件通知 ' + affected.size + ' 位员工', 'info');
+  },
+  async genInviteCode() {
+    if (!confirm('确定要生成一个新的邀请码吗？旧邀请码将失效。')) return;
+    const newCode = Math.random().toString(36).slice(2, 8).toUpperCase();
+    // 更新 shops 表
+    await sb.from('shops').update({ invite_code: newCode }).eq('id', _SHOP.id);
+    // 更新 pb_invite_codes (旧码标记失效，新码生效)
+    await sb.from('pb_invite_codes').delete().eq('shop_id', _SHOP.id);
+    await sb.from('pb_invite_codes').insert([{ code: newCode, shop_name: _SHOP.name, shop_id: _SHOP.id, created_by: _USER.id }]);
+    _SHOP.invite_code = newCode;
+    toast('新邀请码: ' + newCode, 'success');
+    Shop.render();
   },
   async saveAllShifts(isPublish = false) {
     document.querySelectorAll('[data-sid]').forEach(input => {
@@ -657,13 +771,25 @@ const Boss = {
   async publish() {
     if (!confirm('确认发布新班次？员工已选的班次将保留。')) return;
     await this.saveAllShifts(true);
-    // 保留员工已有的选班，更新周次
     const asgn = _DB.sched.assignments || {};
     asgn._week_start = getWeekStart();
     await S.saveSched(asgn);
     await S.fetchAll();
     this.init();
     toast('🚀 新班次已发布！员工选班已保留', 'success');
+
+    // 邮件通知所有有排班的员工
+    const affected = new Set();
+    Object.keys(asgn).forEach(day => {
+      if (day.startsWith('_')) return;
+      Object.values(asgn[day] || {}).forEach(ids => { ids.forEach(id => affected.add(id)); });
+    });
+    const subject = _SHOP.name + ' - 新班次已发布';
+    const text = buildScheduleEmail(_SHOP.name, '本周班次已更新发布，请登录查看您的排班安排。');
+    for (const empId of affected) {
+      await notifyEmp(empId, subject, text);
+    }
+    toast('已发送邮件通知 ' + affected.size + ' 位员工', 'info');
   }
 };
 
@@ -754,7 +880,44 @@ const EmpAvail = {
       asgn._week_start = getWeekStart();
       await S.saveSched(asgn);
       await S.fetchAll();
-      toast('提交成功！已自动调整排班', 'success');
+
+      // 自动补位每个空缺班次
+      let allFilled = true;
+      const filledEmps = new Map(); // empId → [{day, shiftName}]
+      for (const d of _DB.config.workDays) {
+        for (const sh of _DB.config.shifts) {
+          const filled = await refillShift(d, sh.id);
+          if (filled && filled.length > 0) {
+            for (const emp of filled) {
+              if (!filledEmps.has(emp.id)) filledEmps.set(emp.id, []);
+              filledEmps.get(emp.id).push(d + ' ' + sh.name + '(' + sh.start + '-' + sh.end + ')');
+            }
+          } else {
+            // 检查该班次是否真的有空缺
+            const current = (_DB.sched.assignments[d] && _DB.sched.assignments[d][sh.id]) || [];
+            if (current.length < (parseInt(sh.required) || 1)) allFilled = false;
+          }
+        }
+      }
+
+      // 通知被补位的员工
+      for (const [empId, shifts] of filledEmps) {
+        await notifyEmp(empId,
+          _SHOP.name + ' - 您有新班次',
+          buildScheduleEmail(_SHOP.name,
+            '由于有人提交了不可用时段，系统已自动安排您顶班：<br><strong>' + shifts.join('<br>') + '</strong><br>请登录查看排班详情。'));
+      }
+
+      if (filledEmps.size > 0) {
+        toast('提交成功！已自动补位 ' + filledEmps.size + ' 人', 'success');
+      }
+
+      // 有空缺补不上 → 通知老板
+      if (!allFilled) {
+        await notifyBoss(_SHOP.name + ' - 排班空缺需处理',
+          buildScheduleEmail(_SHOP.name,
+            '<strong>' + (_PROFILE.name || _USER.email) + '</strong> 提交了不可用时段，部分班次暂无合适人选自动补位，请手动安排。'));
+      }
     } else {
       toast('提交成功！', 'success');
     }
@@ -836,15 +999,39 @@ function getMyPosition() {
 }
 
 async function cancelClaim(day, shiftId) {
+  if (!isFutureDay(day)) return toast('不能取消当天或已过去的班次', 'error');
   if (!_DB.sched.assignments || !_DB.sched.assignments[day]) return;
   const picked = _DB.sched.assignments[day][shiftId] || [];
   if (!picked.includes(_USER.id)) return;
+  const sh = _DB.config.shifts.find(s => s.id === shiftId);
   _DB.sched.assignments[day][shiftId] = picked.filter(id => id !== _USER.id);
   _DB.sched.assignments._week_start = getWeekStart();
   await S.saveSched(_DB.sched.assignments);
+  await S.fetchAll();
+
+  // 自动补位
+  const filled = await refillShift(day, shiftId);
   EmpAvail.render();
   EmpSchedule.render();
-  toast('已取消', 'info');
+  const shiftName = sh ? sh.name + '(' + sh.start + '-' + sh.end + ')' : shiftId;
+
+  if (filled && filled.length > 0) {
+    // 补位成功 → 通知被补位的员工
+    const names = filled.map(e => e.name).join('、');
+    toast('已取消，自动补位: ' + names, 'info');
+    for (const emp of filled) {
+      await notifyEmp(emp.id,
+        _SHOP.name + ' - 您有新班次',
+        buildScheduleEmail(_SHOP.name,
+          '<strong>' + day + ' ' + shiftName + '</strong> 出现空缺，系统已自动安排您顶班。请登录查看排班详情。'));
+    }
+  } else {
+    // 补位失败 → 通知老板处理
+    toast('已取消，暂无合适人选补位', 'info');
+    await notifyBoss(_SHOP.name + ' - 排班空缺需处理',
+      buildScheduleEmail(_SHOP.name,
+        '<strong>' + (_PROFILE.name || _USER.email) + '</strong> 取消了 <strong>' + day + ' ' + shiftName + '</strong>，暂无合适人选自动补位，请手动安排。'));
+  }
 }
 
 // === Employee Schedule (当前班表 - 含取消和换班) ===
@@ -904,9 +1091,33 @@ const EmpSchedule = {
     this._swapFrom = null;
     await S.saveSched(_DB.sched.assignments);
     await S.fetchAll();
+
+    // 自动补位旧班次
+    const filled = await refillShift(srcDay, srcSid);
     EmpAvail.render();
     this.render();
-    toast('换班成功！', 'success');
+
+    const srcSh = _DB.config.shifts.find(s => s.id === srcSid);
+    const tgtSh = _DB.config.shifts.find(s => s.id === targetShiftId);
+    const srcShiftName = srcSh ? srcSh.name + '(' + srcSh.start + '-' + srcSh.end + ')' : srcSid;
+
+    if (filled && filled.length > 0) {
+      // 补位成功 → 通知被补位的员工
+      const names = filled.map(e => e.name).join('、');
+      toast('换班成功！自动补位: ' + names, 'success');
+      for (const emp of filled) {
+        await notifyEmp(emp.id,
+          _SHOP.name + ' - 您有新班次',
+          buildScheduleEmail(_SHOP.name,
+            '<strong>' + srcDay + ' ' + srcShiftName + '</strong> 出现空缺，系统已自动安排您顶班。请登录查看排班详情。'));
+      }
+    } else {
+      // 补位失败 → 通知老板处理
+      toast('换班成功！暂无合适人选补位原班次', 'success');
+      await notifyBoss(_SHOP.name + ' - 排班空缺需处理',
+        buildScheduleEmail(_SHOP.name,
+          '<strong>' + (_PROFILE.name || _USER.email) + '</strong> 换班后 <strong>' + srcDay + ' ' + srcShiftName + '</strong> 出现空缺，暂无合适人选自动补位，请手动安排。'));
+    }
   },
 
   render() {
@@ -1014,10 +1225,10 @@ const UI = {
     const desc = document.getElementById('authDesc');
     const loginActions = document.getElementById('loginActions');
     const signupActions = document.getElementById('signupActions');
-    
+
     if (mode === 'signup') {
       title.textContent = '创建新账号';
-      desc.textContent = '注册后即可创建或加入店铺';
+      desc.textContent = '请输入邀请码注册，一店一码';
       loginActions.style.display = 'none';
       signupActions.style.display = 'block';
     } else {
@@ -1025,6 +1236,33 @@ const UI = {
       desc.textContent = '请使用邮箱和密码访问您的店铺';
       loginActions.style.display = 'block';
       signupActions.style.display = 'none';
+    }
+  },
+  async checkInviteCode() {
+    const code = document.getElementById('signupInviteCode').value.trim();
+    const hint = document.getElementById('inviteCodeHint');
+    const shopNameGroup = document.getElementById('newShopNameGroup');
+    if (!code || code.length < 4) {
+      hint.style.display = 'none';
+      shopNameGroup.style.display = 'none';
+      return;
+    }
+    const { data, error } = await sb.from('pb_invite_codes').select('*').eq('code', code).single();
+    if (error || !data) {
+      hint.style.display = 'block';
+      hint.style.color = '#e74c3c';
+      hint.textContent = '邀请码无效';
+      shopNameGroup.style.display = 'none';
+    } else if (data.shop_id) {
+      hint.style.display = 'block';
+      hint.style.color = '#27ae60';
+      hint.textContent = '将加入店铺: ' + data.shop_name;
+      shopNameGroup.style.display = 'none';
+    } else {
+      hint.style.display = 'block';
+      hint.style.color = '#667eea';
+      hint.textContent = '新店铺，注册后自动创建';
+      shopNameGroup.style.display = 'block';
     }
   },
   switchBossTab(t) {
@@ -1071,6 +1309,31 @@ function toast(msg, type='info') {
   const d = document.createElement('div'); d.className = 'toast ' + type; d.textContent = msg;
   document.getElementById('toasts').appendChild(d);
   setTimeout(() => d.remove(), 3000);
+}
+
+// === Email Notification ===
+async function notifyBoss(subject, text) {
+  const boss = _DB.emps.find(e => e.id === _SHOP.boss_id);
+  if (boss && boss.email) {
+    await S.sendEmail(boss.email, subject, text);
+  }
+}
+
+async function notifyEmp(empId, subject, text) {
+  if (empId === _SHOP.boss_id) return; // boss already notified via notifyBoss
+  const emp = _DB.emps.find(e => e.id === empId);
+  if (emp && emp.email) {
+    await S.sendEmail(emp.email, subject, text);
+  }
+}
+
+function buildScheduleEmail(shopName, details) {
+  return `<div style="font-family:sans-serif;max-width:500px;margin:0 auto">
+    <h2 style="color:#667eea">${shopName} - 排班通知</h2>
+    <p>${details}</p>
+    <hr style="border-color:#eee">
+    <p style="font-size:12px;color:#999">此邮件由排班系统自动发送，请勿回复。</p>
+  </div>`;
 }
 
 // === Init ===
