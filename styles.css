@@ -36,7 +36,7 @@ html, body {
 }
 
 /* ===== Utilities ===== */
-.hidden { display: none !important; }
+.hidden { display: none; }
 .text-red { color: var(--red); }
 .text-green { color: var(--green); }
 .text-primary { color: var(--primary); }

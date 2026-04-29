@@ -351,7 +351,7 @@ const S = {
             if (idx >= 0) {
               const d = new Date(monday);
               d.setDate(monday.getDate() + idx);
-              converted[d.toISOString().split('T')[0]] = rawAssignments[key];
+              converted[formatLocalDate(d)] = rawAssignments[key];
             } else if (key.startsWith('_')) {
               converted[key] = rawAssignments[key];
             }
@@ -369,29 +369,33 @@ const S = {
       _DB.sched = sch ? {assignments: rawAssignments, overrides: sch.overrides || {}, at: sch.updated_at} : {assignments:{}, overrides:{}, at:''};
     }
 
-    // TT 数据同样做旧格式迁移 (使用保存的旧哨兵)
-    if (tts) tts.forEach(t => {
-      const busy = t.busy_data || {};
-      const hasLegacyTT = Object.keys(busy).some(k => dayNameKeys.includes(k));
-      if (hasLegacyTT) {
-        const weekStart = legacyWeekStart || getScheduleStart();
-        const monday = new Date(weekStart + 'T00:00:00');
-        const convertedTT = {};
-        Object.keys(busy).forEach(key => {
-          const idx = dayNameKeys.indexOf(key);
-          if (idx >= 0 && !isNaN(monday.getTime())) {
-            const d = new Date(monday);
-            d.setDate(monday.getDate() + idx);
-            convertedTT[d.toISOString().split('T')[0]] = busy[key];
-          } else if (key.startsWith('_')) {
-            convertedTT[key] = busy[key];
-          }
-        });
-        _DB.tt[t.emp_id] = {busy: convertedTT, submitted: t.submitted};
-      } else {
-        _DB.tt[t.emp_id] = {busy, submitted: t.submitted};
+    // TT 数据同样做旧格式迁移 (使用保存的旧哨兵)，并持久化
+    if (tts) {
+      for (const t of tts) {
+        const busy = t.busy_data || {};
+        const hasLegacyTT = Object.keys(busy).some(k => dayNameKeys.includes(k));
+        if (hasLegacyTT) {
+          const weekStart = legacyWeekStart || getScheduleStart();
+          const monday = new Date(weekStart + 'T00:00:00');
+          const convertedTT = {};
+          Object.keys(busy).forEach(key => {
+            const idx = dayNameKeys.indexOf(key);
+            if (idx >= 0 && !isNaN(monday.getTime())) {
+              const d = new Date(monday);
+              d.setDate(monday.getDate() + idx);
+              convertedTT[formatLocalDate(d)] = busy[key];
+            } else if (key.startsWith('_')) {
+              convertedTT[key] = busy[key];
+            }
+          });
+          _DB.tt[t.emp_id] = {busy: convertedTT, submitted: t.submitted};
+          // 持久化迁移后的 TT 数据，避免每次加载都重新转换
+          await S.saveTT(t.emp_id, {busy: convertedTT, submitted: t.submitted});
+        } else {
+          _DB.tt[t.emp_id] = {busy, submitted: t.submitted};
+        }
       }
-    });
+    }
 
     // 窗口前移：如果存储的 schedule_start 与今天不同，清除旧日期保留新窗口内的
     const storedStart = _DB.sched.assignments._schedule_start;
@@ -1329,13 +1333,13 @@ const UI = {
     if (mode === 'signup') {
       title.textContent = '创建新账号';
       desc.textContent = '请输入邀请码注册，一店一码';
-      loginActions.style.display = 'none';
-      signupActions.style.display = 'block';
+      loginActions.classList.add('hidden');
+      signupActions.classList.remove('hidden');
     } else {
       title.textContent = '欢迎登录';
       desc.textContent = '请使用邮箱和密码访问您的店铺';
-      loginActions.style.display = 'block';
-      signupActions.style.display = 'none';
+      loginActions.classList.remove('hidden');
+      signupActions.classList.add('hidden');
     }
   },
   async checkInviteCode() {
@@ -1343,26 +1347,26 @@ const UI = {
     const hint = document.getElementById('inviteCodeHint');
     const shopNameGroup = document.getElementById('newShopNameGroup');
     if (!code || code.length < 4) {
-      hint.style.display = 'none';
-      shopNameGroup.style.display = 'none';
+      hint.classList.add('hidden');
+      shopNameGroup.classList.add('hidden');
       return;
     }
     const { data, error } = await sb.from('pb_invite_codes').select('*').eq('code', code).single();
     if (error || !data) {
-      hint.style.display = 'block';
+      hint.classList.remove('hidden');
       hint.style.color = '#e74c3c';
       hint.textContent = '邀请码无效';
-      shopNameGroup.style.display = 'none';
+      shopNameGroup.classList.add('hidden');
     } else if (data.shop_id) {
-      hint.style.display = 'block';
+      hint.classList.remove('hidden');
       hint.style.color = '#059669';
       hint.textContent = '将加入店铺: ' + data.shop_name;
-      shopNameGroup.style.display = 'none';
+      shopNameGroup.classList.add('hidden');
     } else {
-      hint.style.display = 'block';
+      hint.classList.remove('hidden');
       hint.style.color = '#4f46e5';
       hint.textContent = '新店铺，注册后自动创建';
-      shopNameGroup.style.display = 'block';
+      shopNameGroup.classList.remove('hidden');
     }
   },
   switchBossTab(t) {
@@ -1386,10 +1390,18 @@ const UI = {
 // === 排班日期工具 (基于可配置滚动窗口) ===
 const DAY_NAMES = ['周日','周一','周二','周三','周四','周五','周六'];
 
+// 本地时区安全的日期格式化（避免 toISOString 在 UTC+8 下日期偏移）
+function formatLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
 function getScheduleStart() {
   const d = new Date();
   d.setHours(0,0,0,0);
-  return d.toISOString().split('T')[0]; // "YYYY-MM-DD"
+  return formatLocalDate(d);
 }
 
 function getScheduleDates() {
@@ -1404,7 +1416,7 @@ function getScheduleDates() {
   for (let i = 0; i < scheduleDays; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
-    const dateStr = d.toISOString().split('T')[0];
+    const dateStr = formatLocalDate(d);
     const dayOfWeek = d.getDay();
     const dayName = DAY_NAMES[dayOfWeek];
     if (workDays.includes(dayName)) {
