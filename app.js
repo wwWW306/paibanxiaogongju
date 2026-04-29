@@ -10,7 +10,7 @@ let _PROFILE = null;
 let _SHOP = null;
 let _ROLE = null; 
 let _DB = {
-  config: {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1, minHoursPerShift:2},
+  config: {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1, minHoursPerShift:2, scheduleDays:7},
   emps: [],
   tt: {},
   sched: {assignments:{}, overrides:{}, at:''},
@@ -199,7 +199,7 @@ const Shop = {
       container.innerHTML = `
         <div class="top-tabs">
           <button class="top-tab active" onclick="UI.switchBossTab('b-schedule')">📅 排班表</button>
-          <button class="top-tab" onclick="UI.switchBossTab('b-preview')">📋 下周预览</button>
+          <button class="top-tab" onclick="UI.switchBossTab('b-preview')">📋 预览排班</button>
           <button class="top-tab" onclick="UI.switchBossTab('b-config')">⚙️ 班次定义</button>
           <button class="top-tab" onclick="UI.switchBossTab('b-employees')">👥 员工管理</button>
           <button class="top-tab" onclick="UI.switchBossTab('b-status')">📋 状态</button>
@@ -217,6 +217,12 @@ const Shop = {
              <button class="btn btn-outline btn-sm" style="flex:1" onclick="Boss.saveAllShifts()">💾 仅存模板</button>
           </div>
           <div class="card"><h2>工作日设置</h2><div class="checkbox-group" id="workDayChecks"></div></div>
+          <div class="card">
+            <h2>排班周期</h2>
+            <div class="form-row">
+              <div><label>排班天数 (从今天起)</label><input type="number" id="cfgScheduleDays" value="${_DB.config.scheduleDays||7}" min="1" max="60" onchange="Boss.save()"/></div>
+            </div>
+          </div>
           <div class="card">
             <h2>已定义的班次 <span style="font-size:12px;color:#888;font-weight:400">(修改后需点击发布)</span></h2>
             <div id="shiftCfgList"></div>
@@ -248,7 +254,7 @@ const Shop = {
       nav.style.display = 'flex';
       container.innerHTML = `
         <div class="tab-content active" id="emp-avail">
-          <h2 style="font-size:1rem;margin-bottom:12px">📋 选下周班次</h2>
+          <h2 style="font-size:1rem;margin-bottom:12px">📋 选择班次</h2>
           <p class="card-hint">点击班次即可选择，每人每天限选一个，选择后职位锁定</p>
           <div id="shiftSelectList"></div>
         </div>
@@ -320,19 +326,86 @@ const S = {
     if(!_PROFILE.shop_id) return;
     const sid = _PROFILE.shop_id;
     const {data: cfg} = await sb.from('pb_config').select('data').eq('shop_id', sid).single();
-    _DB.config = cfg ? cfg.data : {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1, minHoursPerShift:2};
+    _DB.config = cfg ? cfg.data : {workDays:['周一','周二','周三','周四','周五'], shifts:[], maxShiftsPerDay:1, minHoursPerShift:2, scheduleDays:7};
+    if (!_DB.config.scheduleDays) _DB.config.scheduleDays = 7;
     const {data: emps} = await sb.from('pb_employees').select('*').eq('shop_id', sid);
     _DB.emps = emps || [];
     const {data: tts} = await sb.from('pb_tt').select('*').eq('shop_id', sid);
     _DB.tt = {};
-    if(tts) tts.forEach(t => { _DB.tt[t.emp_id] = {busy: t.busy_data, submitted: t.submitted} });
     const {data: sch} = await sb.from('pb_sched').select('*').eq('shop_id', sid).single();
-    _DB.sched = sch ? {assignments: sch.assignments || {}, overrides: sch.overrides || {}, at: sch.updated_at} : {assignments:{}, overrides:{}, at:''};
-    // 周次结转：如果存储的周次与当前周不同，自动结转选班
-    const storedWeek = _DB.sched.assignments._week_start;
-    const currentWeek = getWeekStart();
-    if (storedWeek && storedWeek !== currentWeek) {
-      _DB.sched.assignments._week_start = currentWeek;
+    const rawAssignments = sch ? (sch.assignments || {}) : {};
+
+    // 保存旧哨兵用于TT迁移
+    const legacyWeekStart = rawAssignments._week_start;
+
+    // 向后兼容：检测并迁移旧格式 (星期名键 → 日期字符串键)
+    const dayNameKeys = ['周一','周二','周三','周四','周五','周六','周日'];
+    const hasLegacy = Object.keys(rawAssignments).some(k => dayNameKeys.includes(k));
+    if (hasLegacy) {
+      if (legacyWeekStart) {
+        const monday = new Date(legacyWeekStart + 'T00:00:00');
+        if (!isNaN(monday.getTime())) {
+          const converted = {};
+          Object.keys(rawAssignments).forEach(key => {
+            const idx = dayNameKeys.indexOf(key);
+            if (idx >= 0) {
+              const d = new Date(monday);
+              d.setDate(monday.getDate() + idx);
+              converted[d.toISOString().split('T')[0]] = rawAssignments[key];
+            } else if (key.startsWith('_')) {
+              converted[key] = rawAssignments[key];
+            }
+          });
+          converted._schedule_start = getScheduleStart();
+          _DB.sched = {assignments: converted, overrides: sch.overrides || {}, at: sch.updated_at};
+          await S.saveSched(converted);
+        } else {
+          _DB.sched = {assignments: rawAssignments, overrides: sch.overrides || {}, at: sch.updated_at};
+        }
+      } else {
+        _DB.sched = {assignments: rawAssignments, overrides: sch.overrides || {}, at: sch.updated_at};
+      }
+    } else {
+      _DB.sched = sch ? {assignments: rawAssignments, overrides: sch.overrides || {}, at: sch.updated_at} : {assignments:{}, overrides:{}, at:''};
+    }
+
+    // TT 数据同样做旧格式迁移 (使用保存的旧哨兵)
+    if (tts) tts.forEach(t => {
+      const busy = t.busy_data || {};
+      const hasLegacyTT = Object.keys(busy).some(k => dayNameKeys.includes(k));
+      if (hasLegacyTT) {
+        const weekStart = legacyWeekStart || getScheduleStart();
+        const monday = new Date(weekStart + 'T00:00:00');
+        const convertedTT = {};
+        Object.keys(busy).forEach(key => {
+          const idx = dayNameKeys.indexOf(key);
+          if (idx >= 0 && !isNaN(monday.getTime())) {
+            const d = new Date(monday);
+            d.setDate(monday.getDate() + idx);
+            convertedTT[d.toISOString().split('T')[0]] = busy[key];
+          } else if (key.startsWith('_')) {
+            convertedTT[key] = busy[key];
+          }
+        });
+        _DB.tt[t.emp_id] = {busy: convertedTT, submitted: t.submitted};
+      } else {
+        _DB.tt[t.emp_id] = {busy, submitted: t.submitted};
+      }
+    });
+
+    // 窗口前移：如果存储的 schedule_start 与今天不同，清除旧日期保留新窗口内的
+    const storedStart = _DB.sched.assignments._schedule_start;
+    const currentStart = getScheduleStart();
+    if (storedStart && storedStart !== currentStart) {
+      const newAssignments = { _schedule_start: currentStart };
+      const scheduleDateSet = new Set(getScheduleDateStrings());
+      Object.keys(_DB.sched.assignments).forEach(key => {
+        if (key.startsWith('_')) return;
+        if (scheduleDateSet.has(key)) {
+          newAssignments[key] = _DB.sched.assignments[key];
+        }
+      });
+      _DB.sched.assignments = newAssignments;
       await S.saveSched(_DB.sched.assignments);
     }
     const {data: ns} = await sb.from('pb_notifs').select('*').eq('shop_id', sid).order('created_at', {ascending: false});
@@ -399,7 +472,7 @@ function getAvailDetail(tt, day, sid) {
 // 自动补位：当某天某班次空缺时，从可用员工中挑选最佳人选填补
 async function refillShift(day, shiftId) {
   // 只能补位今天及未来的班次
-  if (getDayIndex(day) < getTodayDayIndex()) return null;
+  if (!isFutureDate(day)) return null;
 
   const c = _DB.config, emps = _DB.emps, asgn = _DB.sched.assignments || {};
   const sh = c.shifts.find(s => s.id === shiftId);
@@ -455,7 +528,7 @@ async function refillShift(day, shiftId) {
   }
 
   if (filled.length > 0) {
-    asgn._week_start = getWeekStart();
+    asgn._schedule_start = getScheduleStart();
     await S.saveSched(asgn);
     return filled;
   }
@@ -472,7 +545,8 @@ async function autoSchedule() {
     const weekTotal = {};
     emps.forEach(e => weekTotal[e.id] = 0);
 
-    c.workDays.forEach(day => {
+    getScheduleDates().forEach(sd => {
+      const day = sd.date;
       asgn[day] = {};
       c.shifts.forEach(sh => {
         const required = parseInt(sh.required) || 1;
@@ -500,6 +574,7 @@ async function autoSchedule() {
       });
     });
 
+    asgn._schedule_start = getScheduleStart();
     await S.saveSched(asgn);
     toast('自动排班已完成', 'success');
   } catch (err) {
@@ -517,6 +592,8 @@ const Boss = {
   },
   async save() {
     _DB.config.workDays = [...document.querySelectorAll('#workDayChecks input:checked')].map(i => i.value);
+    const sdEl = document.getElementById('cfgScheduleDays');
+    if (sdEl) _DB.config.scheduleDays = parseInt(sdEl.value) || 7;
     await S.saveCfg(_DB.config);
     this.renderGrid();
   },
@@ -586,8 +663,11 @@ const Boss = {
   },
   renderGrid() {
     const c=_DB.config, emps=_DB.emps, sched=_DB.sched, ov=sched.overrides || {}, el=document.getElementById('bossGrid');
-    if(!el) return; // 员工视图无此元素
+    if(!el) return;
     if(!c.shifts.length||!emps.length) return el.innerHTML = '<div class="empty">请先配置班次并邀请员工</div>';
+
+    const schedDates = getScheduleDates();
+    if (!schedDates.length) return el.innerHTML = '<div class="empty">当前排班周期无工作日</div>';
 
     const em={}; emps.forEach(e=>{em[e.id]=e});
 
@@ -599,16 +679,17 @@ const Boss = {
       groups[pos].push(sh);
     });
 
-    let h='<table class="schedule-table"><thead><tr><th>班次</th>'+c.workDays.map(d=>`<th>${d}</th>`).join('')+'</tr></thead><tbody>';
+    let h='<table class="schedule-table"><thead><tr><th>班次</th>'+schedDates.map(sd=>`<th>${sd.label}</th>`).join('')+'</tr></thead><tbody>';
 
     Object.keys(groups).forEach(pos => {
-      h += '<tr class="pos-header"><td colspan="' + (c.workDays.length + 1) + '" style="background:#f5f5f5;font-weight:700;padding:6px 10px;font-size:13px;text-align:left;color:#555">' + pos + '</td></tr>';
+      h += '<tr class="pos-header"><td colspan="' + (schedDates.length + 1) + '" style="background:#f5f5f5;font-weight:700;padding:6px 10px;font-size:13px;text-align:left;color:#555">' + pos + '</td></tr>';
 
       groups[pos].forEach(sh => {
         const required = parseInt(sh.required) || 1;
         const posTag = sh.position ? ' <span style="background:#4f46e5;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
         h += '<tr><td class="shift-label">' + sh.name + posTag + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
-        c.workDays.forEach(day => {
+        schedDates.forEach(sd => {
+          const day = sd.date;
           const ids = ov[day + '_' + sh.id] || (sched.assignments[day] ? sched.assignments[day][sh.id] : []) || [];
           const shortage = ids.length < required;
           let cellHtml = ids.map(id => {
@@ -636,6 +717,9 @@ const Boss = {
     if(!el) return;
     if(!c.shifts.length||!emps.length) return el.innerHTML = '<div class="empty">请先配置班次并邀请员工</div>';
 
+    const schedDates = getScheduleDates();
+    if (!schedDates.length) return el.innerHTML = '<div class="empty">当前排班周期无工作日</div>';
+
     // 统计提交状态
     const submitted = emps.filter(e => _DB.tt[e.id] && _DB.tt[e.id].submitted);
     const notSubmitted = emps.filter(e => !_DB.tt[e.id] || !_DB.tt[e.id].submitted);
@@ -645,12 +729,13 @@ const Boss = {
     const weekTotal = {};
     emps.forEach(e => weekTotal[e.id] = 0);
 
-    c.workDays.forEach(day => {
+    schedDates.forEach(sd => {
+      const day = sd.date;
       preview[day] = {};
       c.shifts.forEach(sh => {
         const required = parseInt(sh.required) || 1;
         const cands = emps.filter(e => {
-          if (e.id === _SHOP.boss_id) return false; // 老板不参与排班
+          if (e.id === _SHOP.boss_id) return false;
           if (getAvailStatus(_DB.tt[e.id], day, sh.id) === 'busy') return false;
           if (sh.position && e.position && e.position !== sh.position) return false;
           return true;
@@ -692,15 +777,16 @@ const Boss = {
       groups[pos].push(sh);
     });
 
-    html += '<table class="schedule-table"><thead><tr><th>班次</th>'+c.workDays.map(d=>`<th>${d}</th>`).join('')+'</tr></thead><tbody>';
+    html += '<table class="schedule-table"><thead><tr><th>班次</th>'+schedDates.map(sd=>`<th>${sd.label}</th>`).join('')+'</tr></thead><tbody>';
 
     Object.keys(groups).forEach(pos => {
-      html += '<tr class="pos-header"><td colspan="' + (c.workDays.length + 1) + '" style="background:#f5f5f5;font-weight:700;padding:6px 10px;font-size:13px;text-align:left;color:#555">' + pos + '</td></tr>';
+      html += '<tr class="pos-header"><td colspan="' + (schedDates.length + 1) + '" style="background:#f5f5f5;font-weight:700;padding:6px 10px;font-size:13px;text-align:left;color:#555">' + pos + '</td></tr>';
       groups[pos].forEach(sh => {
         const required = parseInt(sh.required) || 1;
         const posTag = sh.position ? ' <span style="background:#4f46e5;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
         html += '<tr><td class="shift-label">' + sh.name + posTag + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
-        c.workDays.forEach(day => {
+        schedDates.forEach(sd => {
+          const day = sd.date;
           const ids = preview[day] ? (preview[day][sh.id] || []) : [];
           const shortage = ids.length < required;
           let cellHtml = ids.map(id => {
@@ -722,7 +808,7 @@ const Boss = {
   async applyPreview() {
     if (!this._preview) return toast('请先生成预览', 'error');
     if (!confirm('确认将预览排班应用为正式排班？当前排班将被覆盖。')) return;
-    this._preview._week_start = getWeekStart();
+    this._preview._schedule_start = getScheduleStart();
     await S.saveSched(this._preview);
     await S.fetchAll();
     const preview = this._preview;
@@ -737,7 +823,7 @@ const Boss = {
       Object.values(preview[day] || {}).forEach(ids => { ids.forEach(id => affected.add(id)); });
     });
     const subject = _SHOP.name + ' - 排班已更新';
-    const text = buildScheduleEmail(_SHOP.name, '下周排班已正式应用，请登录查看您的排班安排。如有疑问请联系老板。');
+    const text = buildScheduleEmail(_SHOP.name, '排班已正式应用，请登录查看您的排班安排。如有疑问请联系老板。');
     for (const empId of affected) {
       await notifyEmp(empId, subject, text);
     }
@@ -765,6 +851,8 @@ const Boss = {
       else s[f] = v;
     });
     _DB.config.workDays = [...document.querySelectorAll('#workDayChecks input:checked')].map(i => i.value);
+    const sdEl = document.getElementById('cfgScheduleDays');
+    if (sdEl) _DB.config.scheduleDays = parseInt(sdEl.value) || 7;
     await S.saveCfg(_DB.config);
     if (!isPublish) {
         this.init();
@@ -775,7 +863,7 @@ const Boss = {
     if (!confirm('确认发布新班次？员工已选的班次将保留。')) return;
     await this.saveAllShifts(true);
     const asgn = _DB.sched.assignments || {};
-    asgn._week_start = getWeekStart();
+    asgn._schedule_start = getScheduleStart();
     await S.saveSched(asgn);
     await S.fetchAll();
     this.init();
@@ -788,7 +876,7 @@ const Boss = {
       Object.values(asgn[day] || {}).forEach(ids => { ids.forEach(id => affected.add(id)); });
     });
     const subject = _SHOP.name + ' - 新班次已发布';
-    const text = buildScheduleEmail(_SHOP.name, '本周班次已更新发布，请登录查看您的排班安排。');
+    const text = buildScheduleEmail(_SHOP.name, '班次已更新发布，请登录查看您的排班安排。');
     for (const empId of affected) {
       await notifyEmp(empId, subject, text);
     }
@@ -833,7 +921,7 @@ const EmpAvail = {
     const idx = this._states.indexOf(cell.status);
     cell.status = this._states[(idx + 1) % 3];
     this.render();
-    toast(day + ' → ' + this._labels[cell.status], 'info');
+    toast(dateToLabel(day) + ' → ' + this._labels[cell.status], 'info');
   },
 
   setDayUnavailable(day) {
@@ -842,7 +930,7 @@ const EmpAvail = {
       this._data[day][sh.id] = { status: 'unavailable' };
     });
     this.render();
-    toast(day + ' 已全部标为不可用', 'info');
+    toast(dateToLabel(day) + ' 已全部标为不可用', 'info');
   },
 
   copyLastWeek() {
@@ -850,8 +938,10 @@ const EmpAvail = {
   },
 
   async submit() {
+    const schedDates = getScheduleDates();
     const busy = {};
-    _DB.config.workDays.forEach(day => {
+    schedDates.forEach(sd => {
+      const day = sd.date;
       busy[day] = {};
       _DB.config.shifts.forEach(sh => {
         const cell = this._getCell(day, sh.id);
@@ -866,7 +956,8 @@ const EmpAvail = {
     // 触发局部重排：检查已排班次是否受影响
     const asgn = _DB.sched.assignments || {};
     let needReschedule = false;
-    _DB.config.workDays.forEach(day => {
+    schedDates.forEach(sd => {
+      const day = sd.date;
       _DB.config.shifts.forEach(sh => {
         const ids = (asgn[day] && asgn[day][sh.id]) || [];
         if (ids.includes(_USER.id)) {
@@ -880,20 +971,21 @@ const EmpAvail = {
     });
 
     if (needReschedule) {
-      asgn._week_start = getWeekStart();
+      asgn._schedule_start = getScheduleStart();
       await S.saveSched(asgn);
       await S.fetchAll();
 
       // 自动补位每个空缺班次
       let allFilled = true;
-      const filledEmps = new Map(); // empId → [{day, shiftName}]
-      for (const d of _DB.config.workDays) {
+      const filledEmps = new Map();
+      for (const sd of getScheduleDates()) {
+        const d = sd.date;
         for (const sh of _DB.config.shifts) {
           const filled = await refillShift(d, sh.id);
           if (filled && filled.length > 0) {
             for (const emp of filled) {
               if (!filledEmps.has(emp.id)) filledEmps.set(emp.id, []);
-              filledEmps.get(emp.id).push(d + ' ' + sh.name + '(' + sh.start + '-' + sh.end + ')');
+              filledEmps.get(emp.id).push(dateToLabel(d) + ' ' + sh.name + '(' + sh.start + '-' + sh.end + ')');
             }
           } else {
             // 检查该班次是否真的有空缺
@@ -931,15 +1023,17 @@ const EmpAvail = {
   },
 
   render() {
-    if (!this._data) this.init(); // 仅首次初始化，避免覆盖内存修改
+    if (!this._data) this.init();
     const c = _DB.config, el = document.getElementById('shiftSelectList');
     if (!c.shifts.length) return el.innerHTML = '<div class="empty">老板尚未发布班次</div>';
+
+    const schedDates = getScheduleDates();
+    if (!schedDates.length) return el.innerHTML = '<div class="empty">当前排班周期无工作日</div>';
 
     const myTT = _DB.tt[_USER.id];
     const submitted = myTT && myTT.submitted;
 
     let html = '';
-    // 状态栏
     html += '<div class="avail-bar">'
       + '<div class="avail-legend">'
       + '<span><span class="avail-dot full"></span> 可上班(全程)</span>'
@@ -948,7 +1042,7 @@ const EmpAvail = {
       + '</div>'
       + '<div style="display:flex;gap:6px;margin-left:auto">'
       + '<button class="btn btn-outline btn-sm" onclick="EmpAvail.copyLastWeek()">📋 同上周</button>'
-      + '<button class="btn btn-primary btn-sm" onclick="EmpAvail.submit()">' + (submitted ? '🔄 重新提交' : '📤 提交本周') + '</button>'
+      + '<button class="btn btn-primary btn-sm" onclick="EmpAvail.submit()">' + (submitted ? '🔄 重新提交' : '📤 提交排班') + '</button>'
       + '</div></div>';
 
     if (submitted) {
@@ -957,14 +1051,14 @@ const EmpAvail = {
       html += '<div style="background:#fff9c4;padding:6px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#856404">⚠ 未提交，默认视为全部可上班。点击格子切换状态后提交。</div>';
     }
 
-    // 网格
     html += '<div class="avail-grid-wrapper"><table class="avail-table"><thead><tr><th>班次</th>';
-    c.workDays.forEach(d => { html += '<th>' + d + '</th>'; });
+    schedDates.forEach(sd => { html += '<th>' + sd.label + '</th>'; });
     html += '</tr></thead><tbody>';
 
     c.shifts.forEach(sh => {
       html += '<tr><td style="font-weight:600;font-size:0.78rem">' + sh.name + '<br><small style="color:#888">' + sh.start + '-' + sh.end + '</small></td>';
-      c.workDays.forEach(day => {
+      schedDates.forEach(sd => {
+        const day = sd.date;
         const cell = this._getCell(day, sh.id);
         const status = cell.status || 'full';
         html += '<td class="avail-cell ' + status + '" onclick="EmpAvail.cycleCell(\'' + day + '\',\'' + sh.id + '\')">'
@@ -972,10 +1066,9 @@ const EmpAvail = {
           + '</td>';
       });
       html += '</tr>';
-      // 全天不可用按钮行
       html += '<tr><td style="font-size:0.7rem;color:#999;padding:4px"></td>';
-      c.workDays.forEach(day => {
-        html += '<td style="padding:2px;text-align:center"><button class="btn btn-outline btn-sm" style="font-size:0.65rem;padding:2px 6px" onclick="EmpAvail.setDayUnavailable(\'' + day + '\')">整天不可用</button></td>';
+      schedDates.forEach(sd => {
+        html += '<td style="padding:2px;text-align:center"><button class="btn btn-outline btn-sm" style="font-size:0.65rem;padding:2px 6px" onclick="EmpAvail.setDayUnavailable(\'' + sd.date + '\')">整天不可用</button></td>';
       });
       html += '</tr>';
     });
@@ -1003,13 +1096,13 @@ function getMyPosition() {
 
 async function cancelClaim(day, shiftId) {
   // 只能修改今天及未来的班次，不能改过去的
-  if (getDayIndex(day) < getTodayDayIndex()) return toast('不能取消已过去的班次', 'error');
+  if (!isFutureDate(day)) return toast('不能取消已过去的班次', 'error');
   if (!_DB.sched.assignments || !_DB.sched.assignments[day]) return;
   const picked = _DB.sched.assignments[day][shiftId] || [];
   if (!picked.includes(_USER.id)) return;
   const sh = _DB.config.shifts.find(s => s.id === shiftId);
   _DB.sched.assignments[day][shiftId] = picked.filter(id => id !== _USER.id);
-  _DB.sched.assignments._week_start = getWeekStart();
+  _DB.sched.assignments._schedule_start = getScheduleStart();
   await S.saveSched(_DB.sched.assignments);
   await S.fetchAll();
 
@@ -1027,14 +1120,14 @@ async function cancelClaim(day, shiftId) {
       await notifyEmp(emp.id,
         _SHOP.name + ' - 您有新班次',
         buildScheduleEmail(_SHOP.name,
-          '<strong>' + day + ' ' + shiftName + '</strong> 出现空缺，系统已自动安排您顶班。请登录查看排班详情。'));
+          '<strong>' + dateToLabel(day) + ' ' + shiftName + '</strong> 出现空缺，系统已自动安排您顶班。请登录查看排班详情。'));
     }
   } else {
     // 补位失败 → 通知老板处理
     toast('已取消，暂无合适人选补位', 'info');
     await notifyBoss(_SHOP.name + ' - 排班空缺需处理',
       buildScheduleEmail(_SHOP.name,
-        '<strong>' + (_PROFILE.name || _USER.email) + '</strong> 取消了 <strong>' + day + ' ' + shiftName + '</strong>，暂无合适人选自动补位，请手动安排。'));
+        '<strong>' + (_PROFILE.name || _USER.email) + '</strong> 取消了 <strong>' + dateToLabel(day) + ' ' + shiftName + '</strong>，暂无合适人选自动补位，请手动安排。'));
   }
 }
 
@@ -1058,7 +1151,7 @@ const EmpSchedule = {
     const srcSid = this._swapFrom.shiftId;
 
     if (targetDay === srcDay) return toast('不能换到同一天', 'error');
-    if (getDayIndex(targetDay) < getTodayDayIndex()) return toast('不能换到已过去的班次', 'error');
+    if (!isFutureDate(targetDay)) return toast('不能换到已过去的班次', 'error');
 
     const sh = _DB.config.shifts.find(s => s.id === targetShiftId);
     if (!sh) return;
@@ -1091,7 +1184,7 @@ const EmpSchedule = {
     // 选择新班次
     if (!_DB.sched.assignments[targetDay]) _DB.sched.assignments[targetDay] = {};
     _DB.sched.assignments[targetDay][targetShiftId] = [...targetPicked, _USER.id];
-    _DB.sched.assignments._week_start = getWeekStart();
+    _DB.sched.assignments._schedule_start = getScheduleStart();
     this._swapFrom = null;
     await S.saveSched(_DB.sched.assignments);
     await S.fetchAll();
@@ -1113,21 +1206,23 @@ const EmpSchedule = {
         await notifyEmp(emp.id,
           _SHOP.name + ' - 您有新班次',
           buildScheduleEmail(_SHOP.name,
-            '<strong>' + srcDay + ' ' + srcShiftName + '</strong> 出现空缺，系统已自动安排您顶班。请登录查看排班详情。'));
+            '<strong>' + dateToLabel(srcDay) + ' ' + srcShiftName + '</strong> 出现空缺，系统已自动安排您顶班。请登录查看排班详情。'));
       }
     } else {
       // 补位失败 → 通知老板处理
       toast('换班成功！暂无合适人选补位原班次', 'success');
       await notifyBoss(_SHOP.name + ' - 排班空缺需处理',
         buildScheduleEmail(_SHOP.name,
-          '<strong>' + (_PROFILE.name || _USER.email) + '</strong> 换班后 <strong>' + srcDay + ' ' + srcShiftName + '</strong> 出现空缺，暂无合适人选自动补位，请手动安排。'));
+          '<strong>' + (_PROFILE.name || _USER.email) + '</strong> 换班后 <strong>' + dateToLabel(srcDay) + ' ' + srcShiftName + '</strong> 出现空缺，暂无合适人选自动补位，请手动安排。'));
     }
   },
 
   render() {
     const c=_DB.config, sched=_DB.sched;
+    const schedDates = getScheduleDates();
     const cards = [];
-    c.workDays.forEach(day=>{
+    schedDates.forEach(sd => {
+      const day = sd.date;
       c.shifts.forEach(sh=>{
         const ids = (sched.assignments && sched.assignments[day] && sched.assignments[day][sh.id]) || [];
         if(ids.includes(_USER.id)) cards.push({day, sh});
@@ -1145,15 +1240,16 @@ const EmpSchedule = {
     if (sw) {
       html += '<div style="background:#fff3cd;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px">'
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-        + '<span>🔄 正在换班：从 <strong>' + sw.day + '</strong> 换出，选择以下目标班次</span>'
+        + '<span>🔄 正在换班：从 <strong>' + dateToLabel(sw.day) + '</strong> 换出，选择以下目标班次</span>'
         + '<button class="btn btn-outline btn-sm" onclick="EmpSchedule.cancelSwap()">取消换班</button>'
         + '</div>';
 
       // 收集所有可换目标班次
       const targets = [];
-      c.workDays.forEach(day => {
-        if (day === sw.day) return; // 不能换同一天
-        if (getDayIndex(day) < getTodayDayIndex()) return; // 不能换到过去
+      schedDates.forEach(sd => {
+        const day = sd.date;
+        if (day === sw.day) return;
+        if (!isFutureDate(day)) return;
         c.shifts.forEach(sh => {
           const required = parseInt(sh.required) || 1;
           const picked = (sched.assignments && sched.assignments[day] && sched.assignments[day][sh.id]) || [];
@@ -1172,7 +1268,7 @@ const EmpSchedule = {
           const posTag = t.sh.position ? ' <span style="background:#4f46e5;color:#fff;padding:1px 4px;border-radius:3px;font-size:9px">' + t.sh.position + '</span>' : '';
           const names = t.picked.map(id => em[id] ? em[id].name : '?').join(',') || '空缺';
           html += '<div onclick="EmpSchedule.completeSwap(\'' + t.day + '\',\'' + t.sh.id + '\')" style="cursor:pointer;padding:8px 12px;border:1px solid #4f46e5;border-radius:8px;background:#fff;font-size:12px;transition:all .15s" onmouseover="this.style.background=\'#f0f2ff\'" onmouseout="this.style.background=\'#fff\'">'
-            + '<strong>' + t.day + '</strong> ' + t.sh.name + posTag
+            + '<strong>' + dateToLabel(t.day) + '</strong> ' + t.sh.name + posTag
             + '<br><small style="color:#888">' + t.sh.start + '-' + t.sh.end + ' · ' + names + ' (' + t.picked.length + '/' + t.required + ')</small>'
             + '</div>';
         });
@@ -1189,7 +1285,7 @@ const EmpSchedule = {
         + '<div style="display:flex;align-items:center;justify-content:space-between">'
         + '<div>'
         + (isSwapSrc ? '<span style="color:#e67e22;font-weight:600;font-size:11px">🔄 待换出 </span>' : '')
-        + '<strong>' + c.day + '</strong> · ' + c.sh.name + posTag + ' <small style="color:#888">' + c.sh.start + '-' + c.sh.end + '</small>'
+        + '<strong>' + dateToLabel(c.day) + '</strong> · ' + c.sh.name + posTag + ' <small style="color:#888">' + c.sh.start + '-' + c.sh.end + '</small>'
         + '</div>'
         + '<div class="sc-actions">'
         + '<button class="btn btn-outline btn-sm" onclick="EmpSchedule.startSwap(\'' + c.day + '\',\'' + c.sh.id + '\')">换班</button>'
@@ -1287,26 +1383,58 @@ const UI = {
   }
 };
 
-// === 周次 & 日期工具 ===
-function getTodayDayIndex() {
-  const d = new Date().getDay();
-  return d === 0 ? 7 : d; // 周一=1 ... 周日=7
+// === 排班日期工具 (基于可配置滚动窗口) ===
+const DAY_NAMES = ['周日','周一','周二','周三','周四','周五','周六'];
+
+function getScheduleStart() {
+  const d = new Date();
+  d.setHours(0,0,0,0);
+  return d.toISOString().split('T')[0]; // "YYYY-MM-DD"
 }
-function getDayIndex(dayName) {
-  const map = {'周一':1,'周二':2,'周三':3,'周四':4,'周五':5,'周六':6,'周日':7};
-  return map[dayName] || 0;
+
+function getScheduleDates() {
+  // 返回排班窗口内的日期列表，已按 workDays 过滤
+  // 返回: [{date: "YYYY-MM-DD", dayName: "周一", label: "04/29 周三"}, ...]
+  const c = _DB.config;
+  const scheduleDays = c.scheduleDays || 7;
+  const workDays = c.workDays || [];
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const dates = [];
+  for (let i = 0; i < scheduleDays; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    const dateStr = d.toISOString().split('T')[0];
+    const dayOfWeek = d.getDay();
+    const dayName = DAY_NAMES[dayOfWeek];
+    if (workDays.includes(dayName)) {
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      dates.push({ date: dateStr, dayName, label: mm + '/' + dd + ' ' + dayName });
+    }
+  }
+  return dates;
 }
-function isFutureDay(dayName) {
-  return getDayIndex(dayName) >= getTodayDayIndex();
+
+function getScheduleDateStrings() {
+  return getScheduleDates().map(d => d.date);
 }
-function getWeekStart() {
-  const now = new Date();
-  const day = now.getDay();
-  const diff = day === 0 ? 6 : day - 1; // 周一为一周开始
-  const mon = new Date(now);
-  mon.setDate(now.getDate() - diff);
-  mon.setHours(0,0,0,0);
-  return mon.toISOString().split('T')[0];
+
+function isFutureDate(dateStr) {
+  return dateStr >= getScheduleStart();
+}
+
+function getTodayDateStr() {
+  return getScheduleStart();
+}
+
+function dateToLabel(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return dateStr;
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const dayName = DAY_NAMES[d.getDay()];
+  return mm + '/' + dd + ' ' + dayName;
 }
 
 function toast(msg, type='info') {
