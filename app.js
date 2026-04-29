@@ -398,8 +398,8 @@ function getAvailDetail(tt, day, sid) {
 
 // 自动补位：当某天某班次空缺时，从可用员工中挑选最佳人选填补
 async function refillShift(day, shiftId) {
-  // 不能修改当天及过去的班次
-  if (!isFutureDay(day)) return null;
+  // 只能补位今天及未来的班次
+  if (getDayIndex(day) < getTodayDayIndex()) return null;
 
   const c = _DB.config, emps = _DB.emps, asgn = _DB.sched.assignments || {};
   const sh = c.shifts.find(s => s.id === shiftId);
@@ -1002,7 +1002,8 @@ function getMyPosition() {
 }
 
 async function cancelClaim(day, shiftId) {
-  if (!isFutureDay(day)) return toast('不能取消当天或已过去的班次', 'error');
+  // 只能修改今天及未来的班次，不能改过去的
+  if (getDayIndex(day) < getTodayDayIndex()) return toast('不能取消已过去的班次', 'error');
   if (!_DB.sched.assignments || !_DB.sched.assignments[day]) return;
   const picked = _DB.sched.assignments[day][shiftId] || [];
   if (!picked.includes(_USER.id)) return;
@@ -1057,7 +1058,7 @@ const EmpSchedule = {
     const srcSid = this._swapFrom.shiftId;
 
     if (targetDay === srcDay) return toast('不能换到同一天', 'error');
-    if (!isFutureDay(targetDay)) return toast('只能换到本周还未开展的班次', 'error');
+    if (getDayIndex(targetDay) < getTodayDayIndex()) return toast('不能换到已过去的班次', 'error');
 
     const sh = _DB.config.shifts.find(s => s.id === targetShiftId);
     if (!sh) return;
@@ -1152,7 +1153,7 @@ const EmpSchedule = {
       const targets = [];
       c.workDays.forEach(day => {
         if (day === sw.day) return; // 不能换同一天
-        if (!isFutureDay(day)) return; // 只能换未来天
+        if (getDayIndex(day) < getTodayDayIndex()) return; // 不能换到过去
         c.shifts.forEach(sh => {
           const required = parseInt(sh.required) || 1;
           const picked = (sched.assignments && sched.assignments[day] && sched.assignments[day][sh.id]) || [];
