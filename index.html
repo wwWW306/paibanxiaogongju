@@ -2,56 +2,43 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>自动排班工具 - 店铺版</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+  <title>排班工具</title>
   <link rel="stylesheet" href="styles.css">
-  <style>
-    /* 基础路由视图切换 */
-    .view { display: none; }
-    .view.active { display: flex; flex-direction: column; height: 100vh; }
-    
-    /* 登录页样式 */
-    .login-container { max-width: 400px; width: 90%; margin: auto; padding: 30px; background: #fff; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
-    
-    /* 通用间距 */
-    .mb-10 { margin-bottom: 10px; }
-    .mt-20 { margin-top: 20px; }
-  </style>
 </head>
 <body>
   <div class="toast-container" id="toasts"></div>
 
-  <!-- #/login 登录/注册页 -->
+  <!-- 登录/注册 -->
   <div class="view" id="view-login">
-    <div class="login-container">
-      <h2 id="authTitle" style="text-align:center; margin-bottom:10px">欢迎登录</h2>
-      <p id="authDesc" style="text-align:center; color:#888; font-size:12px; margin-bottom:20px">请使用邮箱和密码访问您的店铺</p>
-      
+    <div class="login-card">
+      <div class="login-brand">排班工具</div>
+      <h2 id="authTitle">欢迎登录</h2>
+      <p id="authDesc">请使用邮箱和密码访问您的店铺</p>
+
       <div class="form-group">
         <label>电子邮箱</label>
-        <input type="email" id="loginEmail" placeholder="your@email.com" />
+        <input type="email" id="loginEmail" placeholder="your@email.com" autocomplete="email"/>
       </div>
-      <div class="form-group mb-10">
+      <div class="form-group">
         <label>密码</label>
-        <input type="password" id="loginPassword" placeholder="请输入密码" />
+        <input type="password" id="loginPassword" placeholder="请输入密码" autocomplete="current-password"/>
       </div>
 
       <div id="loginActions">
-        <button class="btn btn-primary btn-block mt-20" onclick="Auth.handleAuth('login')">立即登录</button>
-        <p style="text-align:center; margin-top:15px; font-size:13px">
-          还没有账号？<a href="javascript:void(0)" onclick="UI.toggleAuthMode('signup')" style="color:var(--primary-color)">立即注册</a>
-        </p>
+        <button class="btn btn-primary btn-block" onclick="Auth.handleAuth('login')">登录</button>
+        <p class="auth-switch">还没有账号？<a href="javascript:void(0)" onclick="UI.toggleAuthMode('signup')">立即注册</a></p>
       </div>
-      
-      <div id="signupActions" style="display:none">
+
+      <div id="signupActions" class="hidden">
         <div class="form-group">
-          <label>邀请码 <span style="color:#e74c3c">*</span></label>
-          <input type="text" id="signupInviteCode" placeholder="请输入6位邀请码" maxlength="6" oninput="UI.checkInviteCode()" />
-          <span id="inviteCodeHint" style="font-size:11px;color:#999;display:none;margin-top:4px"></span>
+          <label>邀请码 <span class="text-red">*</span></label>
+          <input type="text" id="signupInviteCode" placeholder="6位邀请码" maxlength="6" oninput="UI.checkInviteCode()"/>
+          <span id="inviteCodeHint" class="hint hidden"></span>
         </div>
-        <div class="form-group" id="newShopNameGroup" style="display:none">
+        <div class="form-group hidden" id="newShopNameGroup">
           <label>店铺名称</label>
-          <input type="text" id="signupShopName" placeholder="为您的新店铺取名" />
+          <input type="text" id="signupShopName" placeholder="为您的新店铺取名"/>
         </div>
         <div class="form-group">
           <label>性别</label>
@@ -60,88 +47,91 @@
             <option value="女">女</option>
           </select>
         </div>
-        <button class="btn btn-primary btn-block mt-20" onclick="Auth.handleAuth('signup')">创建账号</button>
-        <p style="text-align:center; margin-top:15px; font-size:13px">
-          已有账号？<a href="javascript:void(0)" onclick="UI.toggleAuthMode('login')" style="color:var(--primary-color)">返回登录</a>
-        </p>
+        <button class="btn btn-primary btn-block" onclick="Auth.handleAuth('signup')">创建账号</button>
+        <p class="auth-switch">已有账号？<a href="javascript:void(0)" onclick="UI.toggleAuthMode('login')">返回登录</a></p>
       </div>
     </div>
   </div>
 
-
-  <!-- #/shop/:shopId 店铺主界面 (动态渲染 老板/员工 视图) -->
+  <!-- 店铺主页 (JS 动态渲染) -->
   <div class="view" id="view-shop">
-    <!-- 顶部导航由角色决定 -->
     <header class="app-header">
       <h1 id="shopTitle">加载中...</h1>
       <div class="header-actions">
-        <button class="header-btn" onclick="location.hash='#/settings'">⚙️</button>
+        <button class="header-btn" onclick="location.hash='#/settings'" title="设置">⚙</button>
       </div>
     </header>
-
-    <!-- 动态内容区 -->
     <div id="shopContent" class="main-content"></div>
-
-    <!-- 底部导航 (仅员工端显示) -->
     <nav class="bottom-tabs" id="shopNav" style="display:none">
-      <button class="bottom-tab active" onclick="UI.switchEmpTab('avail')">📋 选下周班次</button>
-      <button class="bottom-tab" onclick="UI.switchEmpTab('schedule')">📅 当前班表</button>
-      <button class="bottom-tab" onclick="UI.switchEmpTab('messages')">💬 消息 <span class="notif-badge" id="notifBadge" style="display:none">0</span></button>
+      <button class="bottom-tab active" onclick="UI.switchEmpTab('avail')">
+        <span class="tab-icon">📋</span>选班次
+      </button>
+      <button class="bottom-tab" onclick="UI.switchEmpTab('schedule')">
+        <span class="tab-icon">📅</span>班表
+      </button>
+      <button class="bottom-tab" onclick="UI.switchEmpTab('messages')">
+        <span class="tab-icon">💬</span>消息
+        <span class="badge-dot" id="notifBadge" style="display:none">0</span>
+      </button>
     </nav>
   </div>
 
-  <!-- #/settings 个人设置 -->
+  <!-- 个人设置 -->
   <div class="view" id="view-settings">
     <header class="app-header">
-      <button class="header-btn" onclick="history.back()">⬅️</button>
+      <button class="header-btn" onclick="history.back()">←</button>
       <h1>个人设置</h1>
+      <div></div>
     </header>
-    <div class="main-content" style="padding:20px">
+    <div class="main-content">
       <div class="card">
         <div class="form-group">
           <label>我的姓名</label>
-          <input type="text" id="profileName" placeholder="请输入姓名" />
+          <input type="text" id="profileName" placeholder="请输入姓名"/>
         </div>
         <div class="form-group">
           <label>通知邮箱</label>
-          <input type="email" id="profileEmail" placeholder="用于接收排班通知" />
+          <input type="email" id="profileEmail" placeholder="用于接收排班通知"/>
         </div>
-        <button class="btn btn-primary btn-block mt-20" onclick="Onboarding.updateProfile()">保存设置</button>
+        <button class="btn btn-primary btn-block" onclick="Onboarding.updateProfile()">保存设置</button>
       </div>
-      <div class="card mt-20" id="leaveShopCard" style="display:none">
-        <p style="font-size:13px;color:#888;margin-bottom:10px">如需退出当前店铺，点击下方按钮。退出后可重新加入其他店铺。</p>
+      <div class="card hidden" id="leaveShopCard">
+        <p class="card-hint">退出后可重新输入邀请码加入其他店铺。</p>
         <button class="btn btn-danger btn-block" onclick="ShopMgmt.leaveShop()">退出当前店铺</button>
       </div>
-      <div class="card mt-20">
+      <div class="card">
         <button class="btn btn-danger btn-block" onclick="Auth.logout()">退出登录</button>
       </div>
-      <div class="mt-20" style="text-align:center; font-size:12px; color:#999">
-        当前店铺 ID: <span id="currentShopIdDisplay">--</span><br>
+      <div class="settings-meta">
+        店铺 ID: <span id="currentShopIdDisplay">--</span><br>
         邀请码: <strong id="currentInviteCodeDisplay">--</strong>
       </div>
     </div>
   </div>
 
-  <!-- 可用时间编辑弹窗 -->
+  <!-- 弹窗 -->
   <div class="modal-overlay" id="availEditModal">
     <div class="modal">
       <h3 id="availEditTitle">班次编辑</h3>
       <div class="avail-options">
-        <label class="avail-opt" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer">
-          <input type="radio" name="availStatus" value="full" checked onchange="EmpAvail.onStatusChange()"> <span>✓ 我可以全程上班</span>
+        <label class="avail-opt">
+          <input type="radio" name="availStatus" value="full" checked onchange="EmpAvail.onStatusChange()">
+          <span>✓ 我可以全程上班</span>
         </label>
-        <label class="avail-opt" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer">
-          <input type="radio" name="availStatus" value="partial" onchange="EmpAvail.onStatusChange()"> <span>⏰ 我可以部分到岗</span>
+        <label class="avail-opt">
+          <input type="radio" name="availStatus" value="partial" onchange="EmpAvail.onStatusChange()">
+          <span>⏰ 我可以部分到岗</span>
         </label>
-        <div id="partialTimeInputs" style="display:none;padding:8px 12px;margin:-4px 0 8px 24px;background:#f9f9f9;border-radius:8px">
+        <div id="partialTimeInputs" class="hidden partial-time">
           <div class="form-row">
-            <div><label>最早到岗时间</label><input type="time" id="earliestArrival"></div>
-            <div><label>最晚离岗时间</label><input type="time" id="latestDeparture"></div>
+            <div><label>最早到岗</label><input type="time" id="earliestArrival"></div>
+            <div><label>最晚离岗</label><input type="time" id="latestDeparture"></div>
           </div>
-          <p style="font-size:11px;color:#999;margin-top:4px" id="partialHint">有效到岗时长需 ≥ 最低要求</p>
+          <p id="partialHint">有效到岗时长需 ≥ 最低要求</p>
         </div>
-        <label class="avail-opt" style="display:flex;align-items:center;gap:8px;padding:10px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer">
-          <input type="radio" name="availStatus" value="unavailable" onchange="EmpAvail.onStatusChange()"> <span>✗ 我无法上班</span>
+        <label class="avail-opt">
+          <input type="radio" name="availStatus" value="unavailable" onchange="EmpAvail.onStatusChange()">
+          <span>✗ 我无法上班</span>
         </label>
       </div>
       <div class="modal-actions">
@@ -151,11 +141,9 @@
     </div>
   </div>
 
-  <!-- 旧的模态框 -->
   <div class="modal-overlay" id="cantWorkModal">...</div>
   <div class="modal-overlay" id="editCellModal">...</div>
 
-  <!-- 脚本引用 -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="app.js"></script>
 </body>

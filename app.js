@@ -236,7 +236,7 @@ const Shop = {
         </div>
         <div class="tab-content" id="b-employees">
           <div class="card"><h2>团队成员</h2><ul class="emp-list" id="empMgmtList"></ul></div>
-          <div class="card mt-20"><h3>邀请码: <strong style="color:var(--primary-color)">${_SHOP.invite_code}</strong></h3><p style="font-size:12px;color:#999">员工注册时输入此邀请码即可自动加入本店。如需更换邀请码，请生成新码。</p>
+          <div class="card mt-20"><h3>邀请码: <strong style="color:var(--primary)">${_SHOP.invite_code}</strong></h3><p style="font-size:12px;color:#999">员工注册时输入此邀请码即可自动加入本店。如需更换邀请码，请生成新码。</p>
           <button class="btn btn-outline btn-sm mt-20" onclick="Boss.genInviteCode()">🔑 生成新的邀请码</button></div>
         </div>
         <div class="tab-content" id="b-status">
@@ -606,7 +606,7 @@ const Boss = {
 
       groups[pos].forEach(sh => {
         const required = parseInt(sh.required) || 1;
-        const posTag = sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
+        const posTag = sh.position ? ' <span style="background:#4f46e5;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
         h += '<tr><td class="shift-label">' + sh.name + posTag + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
         c.workDays.forEach(day => {
           const ids = ov[day + '_' + sh.id] || (sched.assignments[day] ? sched.assignments[day][sh.id] : []) || [];
@@ -698,7 +698,7 @@ const Boss = {
       html += '<tr class="pos-header"><td colspan="' + (c.workDays.length + 1) + '" style="background:#f5f5f5;font-weight:700;padding:6px 10px;font-size:13px;text-align:left;color:#555">' + pos + '</td></tr>';
       groups[pos].forEach(sh => {
         const required = parseInt(sh.required) || 1;
-        const posTag = sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
+        const posTag = sh.position ? ' <span style="background:#4f46e5;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + sh.position + '</span>' : '';
         html += '<tr><td class="shift-label">' + sh.name + posTag + '<br><small>' + sh.start + '-' + sh.end + '</small></td>';
         c.workDays.forEach(day => {
           const ids = preview[day] ? (preview[day][sh.id] || []) : [];
@@ -952,7 +952,7 @@ const EmpAvail = {
       + '</div></div>';
 
     if (submitted) {
-      html += '<div style="background:#d5f5e3;padding:6px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#27ae60">✓ 已提交</div>';
+      html += '<div style="background:#dcfce7;padding:6px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#059669">✓ 已提交</div>';
     } else {
       html += '<div style="background:#fff9c4;padding:6px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;color:#856404">⚠ 未提交，默认视为全部可上班。点击格子切换状态后提交。</div>';
     }
@@ -1168,9 +1168,9 @@ const EmpSchedule = {
       } else {
         html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
         targets.forEach(t => {
-          const posTag = t.sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 4px;border-radius:3px;font-size:9px">' + t.sh.position + '</span>' : '';
+          const posTag = t.sh.position ? ' <span style="background:#4f46e5;color:#fff;padding:1px 4px;border-radius:3px;font-size:9px">' + t.sh.position + '</span>' : '';
           const names = t.picked.map(id => em[id] ? em[id].name : '?').join(',') || '空缺';
-          html += '<div onclick="EmpSchedule.completeSwap(\'' + t.day + '\',\'' + t.sh.id + '\')" style="cursor:pointer;padding:8px 12px;border:1px solid #667eea;border-radius:8px;background:#fff;font-size:12px;transition:all .15s" onmouseover="this.style.background=\'#f0f2ff\'" onmouseout="this.style.background=\'#fff\'">'
+          html += '<div onclick="EmpSchedule.completeSwap(\'' + t.day + '\',\'' + t.sh.id + '\')" style="cursor:pointer;padding:8px 12px;border:1px solid #4f46e5;border-radius:8px;background:#fff;font-size:12px;transition:all .15s" onmouseover="this.style.background=\'#f0f2ff\'" onmouseout="this.style.background=\'#fff\'">'
             + '<strong>' + t.day + '</strong> ' + t.sh.name + posTag
             + '<br><small style="color:#888">' + t.sh.start + '-' + t.sh.end + ' · ' + names + ' (' + t.picked.length + '/' + t.required + ')</small>'
             + '</div>';
@@ -1182,7 +1182,7 @@ const EmpSchedule = {
 
     // 已选班次卡片
     cards.forEach(c => {
-      const posTag = c.sh.position ? ' <span style="background:#667eea;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + c.sh.position + '</span>' : '';
+      const posTag = c.sh.position ? ' <span style="background:#4f46e5;color:#fff;padding:1px 5px;border-radius:3px;font-size:10px">' + c.sh.position + '</span>' : '';
       const isSwapSrc = sw && sw.day === c.day && sw.shiftId === c.sh.id;
       html += '<div class="card" style="margin-bottom:8px;' + (isSwapSrc ? 'border:2px solid #e67e22;background:#fff8e1' : '') + '">'
         + '<div style="display:flex;align-items:center;justify-content:space-between">'
@@ -1258,12 +1258,12 @@ const UI = {
       shopNameGroup.style.display = 'none';
     } else if (data.shop_id) {
       hint.style.display = 'block';
-      hint.style.color = '#27ae60';
+      hint.style.color = '#059669';
       hint.textContent = '将加入店铺: ' + data.shop_name;
       shopNameGroup.style.display = 'none';
     } else {
       hint.style.display = 'block';
-      hint.style.color = '#667eea';
+      hint.style.color = '#4f46e5';
       hint.textContent = '新店铺，注册后自动创建';
       shopNameGroup.style.display = 'block';
     }
@@ -1332,7 +1332,7 @@ async function notifyEmp(empId, subject, text) {
 
 function buildScheduleEmail(shopName, details) {
   return `<div style="font-family:sans-serif;max-width:500px;margin:0 auto">
-    <h2 style="color:#667eea">${shopName} - 排班通知</h2>
+    <h2 style="color:#4f46e5">${shopName} - 排班通知</h2>
     <p>${details}</p>
     <hr style="border-color:#eee">
     <p style="font-size:12px;color:#999">此邮件由排班系统自动发送，请勿回复。</p>
