@@ -293,7 +293,13 @@ const Settings = {
     document.getElementById('currentShopIdDisplay').textContent = _PROFILE.shop_id || '--';
     document.getElementById('currentInviteCodeDisplay').textContent = _SHOP ? _SHOP.invite_code : '--';
     const leaveCard = document.getElementById('leaveShopCard');
-    if (leaveCard) leaveCard.style.display = (_PROFILE.shop_id && _ROLE === 'employee') ? 'block' : 'none';
+    if (leaveCard) {
+      if (_PROFILE.shop_id && _ROLE === 'employee') {
+        leaveCard.classList.remove('hidden');
+      } else {
+        leaveCard.classList.add('hidden');
+      }
+    }
   }
 };
 
@@ -301,12 +307,17 @@ const Settings = {
 const ShopMgmt = {
   async leaveShop() {
     if (!confirm('确定要退出当前店铺吗？退出后需要重新输入邀请码才能加入。')) return;
-    await sb.from('pb_employees').delete().eq('id', _USER.id).eq('shop_id', _PROFILE.shop_id);
-    await sb.from('pb_tt').delete().eq('emp_id', _USER.id).eq('shop_id', _PROFILE.shop_id);
-    await sb.from('profiles').update({ shop_id: null, role: null }).eq('id', _USER.id);
-    _PROFILE.shop_id = null; _ROLE = null; _SHOP = null;
-    toast('已退出店铺', 'success');
-    window.location.hash = '#/settings';
+    try {
+      await sb.from('pb_employees').delete().eq('id', _USER.id).eq('shop_id', _PROFILE.shop_id);
+      await sb.from('pb_tt').delete().eq('emp_id', _USER.id).eq('shop_id', _PROFILE.shop_id);
+      await sb.from('profiles').update({ shop_id: null, role: null }).eq('id', _USER.id);
+      _PROFILE.shop_id = null; _ROLE = null; _SHOP = null; _DB.emps = []; _DB.tt = {};
+      toast('已退出店铺', 'success');
+      window.location.hash = '#/settings';
+    } catch (e) {
+      console.error('退出店铺失败:', e);
+      toast('退出失败，请重试', 'error');
+    }
   },
   async removeMember(empId, empName) {
     if (!confirm('确定要将 "' + empName + '" 移出店铺吗？')) return;
